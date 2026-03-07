@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "contract-ingest"
+version = "0.1.0"
+description = "Contract PDF ingestion core for native-text-first and OCR-fallback extraction"
+readme = "contract_ingest_mvp_plan_complete.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "contract-ingest" }
+]
+dependencies = [
+  "pydantic>=2.8.0,<3.0.0",
+  "PyMuPDF>=1.24.0,<2.0.0",
+  "numpy>=1.26.0,<3.0.0",
+  "paddlepaddle>=3.0.0",
+  "paddleocr>=2.8.0,<3.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.8.0",
+  "mypy>=1.13.0"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["contract_ingest"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_return_any = true
+warn_unused_ignores = true
+exclude = ["tests/"]
