@@ -13,3 +13,10 @@ build/
 .env
 outputs/
 runs/
+
+# python cache
+__pycache__/
+*.pyc
+
+# local data
+data/
