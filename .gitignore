@@ -20,3 +20,6 @@ __pycache__/
 
 # local data
 data/
+
+# local notes / diffs
+codex_*.txt
