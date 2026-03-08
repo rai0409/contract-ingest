@@ -22,6 +22,17 @@ _KANJI_DIGITS = {
     "九": 9,
 }
 
+_ARTICLE_HEADING_RE = re.compile(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条")
+_ANNOTATION_BRACKET_RE = re.compile(r"^\s*\[[^\]]{1,20}\]\s*$")
+_PLACEHOLDER_DATE_RE = re.compile(r"^\s*[0０]{2,4}年\s*[0０]{1,2}月\s*[0０]{1,2}日\s*$")
+_PLACEHOLDER_LABEL_RE = re.compile(r"^\s*[（(]\s*(住所|代表者名)\s*[）)]\s*$")
+_FRAGMENT_TOKEN_RE = re.compile(r"^[\[\]【】()（）0-9０-９①-⑳]+$")
+_PAGE_NUMBER_RE = re.compile(
+    r"^\s*(?:page\s*)?[0-9０-９]{1,4}\s*(?:/\s*[0-9０-９]{1,4})?\s*(?:ページ|頁)?\s*$",
+    re.IGNORECASE,
+)
+_ROMAN_PAGE_NUMBER_RE = re.compile(r"^\s*[IVXLCDM]{1,8}\s*$")
+
 
 
 def normalize_digits(text: str) -> str:
@@ -79,6 +90,56 @@ def unique_preserve_order(values: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def is_article_heading_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return bool(_ARTICLE_HEADING_RE.match(normalized))
+
+
+def is_page_number_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if is_article_heading_text(normalized):
+        return False
+    return bool(_PAGE_NUMBER_RE.fullmatch(normalized) or _ROMAN_PAGE_NUMBER_RE.fullmatch(normalized))
+
+
+def is_annotation_like_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if is_article_heading_text(normalized):
+        return False
+    if _ANNOTATION_BRACKET_RE.fullmatch(normalized):
+        return True
+    if _PLACEHOLDER_DATE_RE.fullmatch(normalized):
+        return True
+    if _PLACEHOLDER_LABEL_RE.fullmatch(normalized):
+        return True
+    if normalized.startswith("[解説") or normalized.startswith("【解説"):
+        return True
+    strong_markers = ("コメントの追加", "コメント", "解説編", "解説", "ひな形", "記入例", "オプション条項")
+    if any(marker in normalized for marker in strong_markers):
+        return True
+    short_markers = ("適宜", "参照")
+    return len(normalized) <= 20 and any(marker in normalized for marker in short_markers)
+
+
+def is_fragment_like_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return True
+    if normalized in {"甲", "乙"}:
+        return False
+    if is_article_heading_text(normalized):
+        return False
+    if len(normalized) <= 2:
+        return True
+    if _FRAGMENT_TOKEN_RE.fullmatch(normalized):
+        return True
+    return False
 
 
 

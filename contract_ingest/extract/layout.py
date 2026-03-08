@@ -18,7 +18,14 @@ from contract_ingest.domain.models import (
 )
 from contract_ingest.utils.image import clip_bbox_to_rect, crop_image_by_pdf_bbox, render_page_to_array
 from contract_ingest.utils.logging import get_logger
-from contract_ingest.utils.text import is_noise_text
+from contract_ingest.utils.text import (
+    is_annotation_like_text,
+    is_article_heading_text,
+    is_fragment_like_text,
+    is_noise_text,
+    is_page_number_text,
+    normalize_text,
+)
 
 
 class LayoutAnalyzerError(RuntimeError):
@@ -43,6 +50,7 @@ class LayoutAnalyzer:
         blocks_by_page: dict[int, list] = {}
         for block in native_result.blocks:
             blocks_by_page.setdefault(block.page, []).append(block)
+        repeated_margin_texts = self._collect_repeated_margin_texts(blocks_by_page)
 
         issues: list[ProcessingIssue] = []
         decisions: list[PageLayoutDecision] = []
@@ -60,7 +68,11 @@ class LayoutAnalyzer:
                 page_area = max(page_rect.width * page_rect.height, 1.0)
 
                 native_blocks = blocks_by_page.get(page_no, [])
-                regions = self._weak_native_regions(native_blocks=native_blocks)
+                regions = self._weak_native_regions(
+                    native_blocks=native_blocks,
+                    page_height=float(page.rect.height),
+                    repeated_margin_texts=repeated_margin_texts,
+                )
                 regions.extend(self._image_regions(page=page, page_no=page_no))
 
                 if page_cls.page_kind == DocumentKind.SCANNED and not regions:
@@ -183,9 +195,20 @@ class LayoutAnalyzer:
 
         return requests, issues
 
-    def _weak_native_regions(self, native_blocks: list) -> list[LayoutRegion]:
+    def _weak_native_regions(
+        self,
+        native_blocks: list,
+        page_height: float,
+        repeated_margin_texts: set[str],
+    ) -> list[LayoutRegion]:
         regions: list[LayoutRegion] = []
         for block in native_blocks:
+            text_role = self._classify_text_role(
+                text=block.text,
+                bbox=block.bbox,
+                page_height=page_height,
+                repeated_margin_texts=repeated_margin_texts,
+            )
             weak = (
                 block.char_count < self.settings.min_block_text_chars
                 or block.garbled_ratio > self.settings.max_garbled_ratio
@@ -194,12 +217,16 @@ class LayoutAnalyzer:
             )
             if not weak:
                 continue
+            if text_role in {"annotation", "header_footer"}:
+                continue
 
             reason = "weak_native_text"
             if block.char_count == 0:
                 reason = "empty_native_text"
             elif block.garbled_ratio > self.settings.max_garbled_ratio:
                 reason = "garbled_native_text"
+            elif text_role == "signature":
+                reason = "weak_signature_text"
 
             regions.append(
                 LayoutRegion(
@@ -215,9 +242,156 @@ class LayoutAnalyzer:
         return regions
 
     @staticmethod
+    def _collect_repeated_margin_texts(blocks_by_page: dict[int, list]) -> set[str]:
+        page_max_y: dict[int, float] = {}
+        for page_no, blocks in blocks_by_page.items():
+            if not blocks:
+                continue
+            page_max_y[page_no] = max(float(block.bbox.y1) for block in blocks)
+
+        counts: dict[str, set[int]] = {}
+        for page_no, blocks in blocks_by_page.items():
+            page_height = page_max_y.get(page_no, 0.0)
+            if page_height <= 0.0:
+                continue
+            for block in blocks:
+                text = normalize_text(block.text)
+                if not text or len(text) > 80 or is_article_heading_text(text):
+                    continue
+                in_margin = block.bbox.y1 <= page_height * 0.12 or block.bbox.y0 >= page_height * 0.88
+                if not in_margin:
+                    continue
+                counts.setdefault(text, set()).add(page_no)
+
+        return {text for text, pages in counts.items() if len(pages) >= 2}
+
+    @staticmethod
+    def _classify_text_role(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        repeated_margin_texts: set[str],
+    ) -> str:
+        normalized = normalize_text(text)
+        if not normalized:
+            return "annotation"
+        if is_article_heading_text(normalized):
+            return "body"
+        if is_annotation_like_text(normalized):
+            return "annotation"
+        if is_page_number_text(normalized):
+            return "header_footer"
+        if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
+            return "body"
+        if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+            return "annotation"
+        if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
+            return "signature"
+        if (
+            len(normalized) <= 8
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙", "法", "裁判所"])
+        ):
+            return "annotation"
+        symbol_like = sum(1 for ch in normalized if ch in "[]{}<>|/\\*#@")
+        if (
+            len(normalized) <= 14
+            and symbol_like >= 2
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙", "法"])
+        ):
+            return "annotation"
+        if is_fragment_like_text(normalized) and not any(
+            token in normalized for token in ["甲", "乙", "株式会社", "合同会社", "有限会社", "第", "条"]
+        ):
+            return "annotation"
+        if normalized in repeated_margin_texts and (
+            bbox.y1 <= page_height * 0.15 or bbox.y0 >= page_height * 0.85
+        ):
+            return "header_footer"
+        if (
+            bbox.y1 <= page_height * 0.06
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
+        if (
+            bbox.y0 >= page_height * 0.96
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
+        return "body"
+
+    @staticmethod
+    def _looks_like_sentence_text(text: str) -> bool:
+        if len(text) >= 16 and any(
+            token in text for token in ["。", "、", "ます", "する", "した", "して", "とする", "もの", "こと", "本契約"]
+        ):
+            return True
+        hiragana_count = sum(1 for ch in text if "\u3040" <= ch <= "\u309F")
+        particles = sum(1 for token in ["は", "が", "を", "に", "で", "と", "の", "へ", "から", "より"] if token in text)
+        if len(text) >= 14 and particles >= 2 and hiragana_count >= 3:
+            return True
+        if len(text) >= 16 and hiragana_count >= 5:
+            return True
+        return len(text) >= 24 and hiragana_count >= 3
+
+    @staticmethod
+    def _is_low_value_fragment_text(text: str) -> bool:
+        if not text:
+            return True
+        if is_article_heading_text(text):
+            return False
+        if text in {"甲", "乙"}:
+            return False
+        legal_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
+        if any(marker in text for marker in legal_markers):
+            return False
+        symbol_like = sum(1 for ch in text if ch in "[]{}<>|/\\*#@")
+        ascii_alnum = sum(1 for ch in text if ch.isascii() and ch.isalnum())
+        kana_kanji = sum(1 for ch in text if ("\u3040" <= ch <= "\u30FF") or ("\u4E00" <= ch <= "\u9FFF"))
+        if len(text) <= 10 and symbol_like >= 2:
+            return True
+        if len(text) <= 12 and ascii_alnum >= max(3, int(len(text) * 0.6)) and kana_kanji <= 2:
+            return True
+        if len(text) <= 8 and symbol_like >= 1 and kana_kanji <= 2:
+            return True
+        return False
+
+    @staticmethod
+    def _is_signature_like_text(text: str, bbox: BBox, page_height: float) -> bool:
+        if any(token in text for token in ["記名押印", "署名欄", "押印", "捺印", "㊞"]):
+            return True
+        if "署名" in text and len(text) <= 20 and not LayoutAnalyzer._looks_like_sentence_text(text):
+            return True
+        near_bottom = page_height >= 700.0 and bbox.y0 >= page_height * 0.72
+        if not near_bottom:
+            return False
+        if len(text) >= 18 and LayoutAnalyzer._looks_like_sentence_text(text):
+            return False
+        if len(text) > 64:
+            return False
+        has_party = any(token in text for token in ["甲", "乙"])
+        has_company = any(token in text for token in ["株式会社", "合同会社", "有限会社"])
+        has_label = any(token in text for token in ["住所", "氏名", "代表者", "署名日", "会社名"])
+        has_date = "年月日" in text or ("年" in text and "月" in text and "日" in text and len(text) <= 24)
+        has_signature_delimiter = any(token in text for token in [":", "：", "㊞", "印", "（", "）", "(", ")"])
+        cues = int(has_party) + int(has_company) + int(has_label) + int(has_date) + int(has_signature_delimiter)
+        if has_party and has_company and has_signature_delimiter:
+            return True
+        if has_label and has_signature_delimiter and (has_party or has_company or has_date):
+            return True
+        return cues >= 4
+
+    @staticmethod
     def _image_regions(page: fitz.Page, page_no: int) -> list[LayoutRegion]:
         page_dict = page.get_text("dict")
         results: list[LayoutRegion] = []
+        page_width = float(page.rect.width)
+        page_height = float(page.rect.height)
+        page_area = max(page_width * page_height, 1.0)
         for idx, block in enumerate(page_dict.get("blocks", []), start=1):
             if block.get("type") != 1:
                 continue
@@ -225,6 +399,16 @@ class LayoutAnalyzer:
             if x1 <= x0 or y1 <= y0:
                 continue
             bbox = BBox(x0=float(x0), y0=float(y0), x1=float(x1), y1=float(y1))
+            area_ratio = bbox.area / page_area
+            near_header_or_side = (
+                bbox.y1 <= page_height * 0.15
+                or bbox.x1 <= page_width * 0.12
+                or bbox.x0 >= page_width * 0.88
+            )
+            if area_ratio < 0.0015:
+                continue
+            if near_header_or_side and area_ratio < 0.0060:
+                continue
             results.append(
                 LayoutRegion(
                     page=page_no,
@@ -257,12 +441,32 @@ class LayoutAnalyzer:
 
 
 def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
-    normalized = text.strip()
+    normalized = normalize_text(text).strip()
     if not normalized:
         return BlockType.OTHER
-    if bbox.y1 <= page_height * 0.10 and len(normalized) <= 60:
+    if is_article_heading_text(normalized):
+        return BlockType.TEXT
+    if is_annotation_like_text(normalized):
+        return BlockType.OTHER
+    if is_page_number_text(normalized):
+        return BlockType.FOOTER
+    if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
+        return BlockType.TEXT
+    if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+        return BlockType.OTHER
+    if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
+        return BlockType.SIGNATURE_AREA
+    if (
+        bbox.y1 <= page_height * 0.08
+        and len(normalized) <= 28
+        and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+    ):
         return BlockType.HEADER
-    if bbox.y0 >= page_height * 0.90 and len(normalized) <= 60:
+    if (
+        bbox.y0 >= page_height * 0.95
+        and len(normalized) <= 28
+        and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+    ):
         return BlockType.FOOTER
     if any(token in normalized for token in ["署名", "記名押印", "署名欄"]):
         return BlockType.SIGNATURE_AREA
