@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from contract_ingest.config import Settings, get_settings
 from contract_ingest.domain.enums import BlockType, ErrorSeverity, ExtractMethod, ReasonCode
 from contract_ingest.domain.models import (
+    BBox,
     LayoutAnalysisResult,
     MergeResult,
     MergedPage,
@@ -13,9 +15,16 @@ from contract_ingest.domain.models import (
     ProcessingIssue,
     UnifiedBlock,
 )
-from contract_ingest.extract.layout import infer_block_type
+from contract_ingest.extract.layout import LayoutAnalyzer, infer_block_type
 from contract_ingest.utils.logging import get_logger
-from contract_ingest.utils.text import is_noise_text
+from contract_ingest.utils.text import (
+    is_annotation_like_text,
+    is_article_heading_text,
+    is_fragment_like_text,
+    is_noise_text,
+    is_page_number_text,
+    normalize_text,
+)
 
 
 class BlockMerger:
@@ -48,10 +57,14 @@ class BlockMerger:
         for block in ocr_result.blocks:
             ocr_by_region[block.region_id].append(block)
 
+        page_height_hints = self._estimate_page_heights(native_by_page, regions_by_page)
+        repeated_margin_texts = self._collect_repeated_margin_texts(native_by_page, page_height_hints)
+
         page_candidates: dict[int, list[dict]] = defaultdict(list)
         consumed_regions: set[str] = set()
 
         for page_no, native_blocks in native_by_page.items():
+            page_height = page_height_hints.get(page_no, 1000.0)
             source_regions = regions_by_page.get(page_no, [])
             source_regions_by_block: dict[str, list] = defaultdict(list)
             for region in source_regions:
@@ -64,6 +77,13 @@ class BlockMerger:
                 for region in linked_regions:
                     linked_ocr_blocks.extend(ocr_by_region.get(region.region_id, []))
 
+                native_kind = self._classify_candidate_kind(
+                    text=block.text,
+                    bbox=block.bbox,
+                    page_height=page_height,
+                    block_type=block.block_type,
+                    repeated_margin_texts=repeated_margin_texts,
+                )
                 native_weak = (
                     block.char_count < self.settings.min_block_text_chars
                     or block.garbled_ratio > self.settings.max_garbled_ratio
@@ -71,24 +91,67 @@ class BlockMerger:
                 )
 
                 if native_weak and linked_ocr_blocks:
+                    accepted_ocr: list[tuple[Any, str]] = []
+                    rejected_annotation = 0
+                    rejected_low_confidence = 0
+                    for ocr_block in sorted(linked_ocr_blocks, key=lambda o: (o.bbox.y0, o.bbox.x0)):
+                        ocr_kind = self._classify_candidate_kind(
+                            text=ocr_block.text,
+                            bbox=ocr_block.bbox,
+                            page_height=page_height,
+                            block_type=ocr_block.block_type,
+                            repeated_margin_texts=repeated_margin_texts,
+                        )
+                        if ocr_kind in {"annotation", "header_footer"}:
+                            rejected_annotation += 1
+                            continue
+                        if self._is_low_value_ocr_fragment(ocr_block.text, ocr_block.confidence):
+                            rejected_low_confidence += 1
+                            continue
+                        if (
+                            native_kind == "body"
+                            and ocr_block.confidence is not None
+                            and ocr_block.confidence < self.settings.low_confidence_threshold
+                        ):
+                            rejected_low_confidence += 1
+                            continue
+                        accepted_ocr.append((ocr_block, ocr_kind))
+
                     for region in linked_regions:
                         consumed_regions.add(region.region_id)
-                    for ocr_block in sorted(linked_ocr_blocks, key=lambda o: (o.bbox.y0, o.bbox.x0)):
-                        page_candidates[page_no].append(
-                            {
-                                "bbox": ocr_block.bbox,
-                                "text": ocr_block.text,
-                                "engine": ocr_block.engine,
-                                "extract_method": ExtractMethod.OCR,
-                                "confidence": ocr_block.confidence,
-                                "block_type": ocr_block.block_type,
-                                "source_block_ids": [block.block_id, ocr_block.block_id],
-                                "adoption_reason": "ocr_replaced_weak_native",
-                            }
-                        )
-                    continue
 
-                if native_weak and not linked_ocr_blocks:
+                    if accepted_ocr:
+                        for ocr_block, ocr_kind in accepted_ocr:
+                            page_candidates[page_no].append(
+                                {
+                                    "bbox": ocr_block.bbox,
+                                    "text": ocr_block.text,
+                                    "engine": ocr_block.engine,
+                                    "extract_method": ExtractMethod.OCR,
+                                    "confidence": ocr_block.confidence,
+                                    "block_type": ocr_block.block_type,
+                                    "source_block_ids": [block.block_id, ocr_block.block_id],
+                                    "adoption_reason": "ocr_replaced_weak_native",
+                                    "candidate_kind": ocr_kind,
+                                }
+                            )
+                        continue
+
+                    warnings.append(
+                        ProcessingIssue(
+                            severity=ErrorSeverity.REVIEW,
+                            reason_code=ReasonCode.PARTIAL_EXTRACTION_FAILURE,
+                            message="weak native block OCR fallback was rejected",
+                            page=block.page,
+                            block_id=block.block_id,
+                            details={
+                                "rejected_annotation_like": rejected_annotation,
+                                "rejected_low_confidence": rejected_low_confidence,
+                            },
+                        )
+                    )
+
+                if native_weak and not linked_ocr_blocks and native_kind in {"body", "signature"}:
                     warnings.append(
                         ProcessingIssue(
                             severity=ErrorSeverity.REVIEW,
@@ -100,6 +163,10 @@ class BlockMerger:
                         )
                     )
 
+                adoption_reason = "native_kept"
+                if native_weak and linked_ocr_blocks:
+                    adoption_reason = "native_kept_ocr_rejected"
+
                 page_candidates[page_no].append(
                     {
                         "bbox": block.bbox,
@@ -109,11 +176,13 @@ class BlockMerger:
                         "confidence": None,
                         "block_type": block.block_type,
                         "source_block_ids": [block.block_id],
-                        "adoption_reason": "native_kept",
+                        "adoption_reason": adoption_reason,
+                        "candidate_kind": native_kind,
                     }
                 )
 
         for page_no, regions in regions_by_page.items():
+            page_height = page_height_hints.get(page_no, 1000.0)
             for region in regions:
                 if region.region_id in consumed_regions and region.source_block_id is not None:
                     continue
@@ -121,6 +190,17 @@ class BlockMerger:
                 if not ocr_blocks:
                     continue
                 for ocr_block in sorted(ocr_blocks, key=lambda o: (o.bbox.y0, o.bbox.x0)):
+                    ocr_kind = self._classify_candidate_kind(
+                        text=ocr_block.text,
+                        bbox=ocr_block.bbox,
+                        page_height=page_height,
+                        block_type=ocr_block.block_type,
+                        repeated_margin_texts=repeated_margin_texts,
+                    )
+                    if ocr_kind in {"annotation", "header_footer"}:
+                        continue
+                    if self._is_low_value_ocr_fragment(ocr_block.text, ocr_block.confidence):
+                        continue
                     page_candidates[page_no].append(
                         {
                             "bbox": ocr_block.bbox,
@@ -131,6 +211,7 @@ class BlockMerger:
                             "block_type": ocr_block.block_type,
                             "source_block_ids": [ocr_block.block_id],
                             "adoption_reason": "ocr_region_added",
+                            "candidate_kind": ocr_kind,
                         }
                     )
 
@@ -155,15 +236,36 @@ class BlockMerger:
                 if not is_duplicate:
                     kept.append(candidate)
 
+            kept = self._merge_adjacent_body_candidates(kept)
+
             for idx, candidate in enumerate(kept, start=1):
-                text = candidate["text"].strip()
+                text = str(candidate["text"]).strip()
+                if not text:
+                    continue
                 method = candidate["extract_method"]
                 block_type = candidate["block_type"]
-                if block_type == BlockType.TEXT:
+                candidate_kind = str(candidate.get("candidate_kind", "body"))
+                if candidate_kind == "annotation":
+                    block_type = BlockType.OTHER
+                elif candidate_kind == "signature":
+                    if block_type != BlockType.STAMP_AREA:
+                        block_type = BlockType.SIGNATURE_AREA
+                elif candidate_kind == "header_footer":
+                    if candidate["bbox"].y1 <= page_height * 0.10:
+                        block_type = BlockType.HEADER
+                    else:
+                        block_type = BlockType.FOOTER
+                elif block_type == BlockType.TEXT:
                     block_type = infer_block_type(text=text, bbox=candidate["bbox"], page_height=page_height)
 
-                searchable = bool(text) and not is_noise_text(text)
-                if block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA, BlockType.IMAGE}:
+                searchable = bool(text) and not is_noise_text(text) and candidate_kind == "body"
+                if block_type in {
+                    BlockType.SIGNATURE_AREA,
+                    BlockType.STAMP_AREA,
+                    BlockType.IMAGE,
+                    BlockType.HEADER,
+                    BlockType.FOOTER,
+                }:
                     searchable = False
 
                 block_id = f"p{page_no}_b{idx:03d}"
@@ -235,3 +337,221 @@ class BlockMerger:
         if not candidates:
             return 1000.0
         return max(float(candidate["bbox"].y1) for candidate in candidates)
+
+    @staticmethod
+    def _estimate_page_heights(native_by_page: dict[int, list], regions_by_page: dict[int, list]) -> dict[int, float]:
+        page_heights: dict[int, float] = {}
+        all_pages = set(native_by_page.keys()) | set(regions_by_page.keys())
+        for page_no in all_pages:
+            max_y = 0.0
+            for block in native_by_page.get(page_no, []):
+                max_y = max(max_y, float(block.bbox.y1))
+            for region in regions_by_page.get(page_no, []):
+                max_y = max(max_y, float(region.bbox.y1))
+            page_heights[page_no] = max_y if max_y > 0.0 else 1000.0
+        return page_heights
+
+    @staticmethod
+    def _collect_repeated_margin_texts(
+        native_by_page: dict[int, list],
+        page_heights: dict[int, float],
+    ) -> set[str]:
+        counts: dict[str, set[int]] = {}
+        for page_no, blocks in native_by_page.items():
+            page_height = page_heights.get(page_no, 1000.0)
+            for block in blocks:
+                text = normalize_text(block.text)
+                if not text or len(text) > 80 or is_article_heading_text(text):
+                    continue
+                in_margin = block.bbox.y1 <= page_height * 0.12 or block.bbox.y0 >= page_height * 0.88
+                if not in_margin:
+                    continue
+                counts.setdefault(text, set()).add(page_no)
+        return {text for text, pages in counts.items() if len(pages) >= 2}
+
+    @staticmethod
+    def _classify_candidate_kind(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        block_type: BlockType,
+        repeated_margin_texts: set[str],
+    ) -> str:
+        normalized = normalize_text(text)
+        if not normalized:
+            return "annotation"
+        if block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
+            return "signature"
+        if block_type in {BlockType.HEADER, BlockType.FOOTER}:
+            return "header_footer"
+        if is_article_heading_text(normalized):
+            return "body"
+        if is_annotation_like_text(normalized):
+            return "annotation"
+        if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
+            return "signature"
+        if is_page_number_text(normalized):
+            return "header_footer"
+        if (
+            len(normalized) <= 8
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙", "法", "裁判所"])
+        ):
+            return "annotation"
+        symbol_like = sum(1 for ch in normalized if ch in "[]{}<>|/\\*#@")
+        if (
+            len(normalized) <= 14
+            and symbol_like >= 2
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙", "法"])
+        ):
+            return "annotation"
+        if is_fragment_like_text(normalized) and not any(
+            token in normalized for token in ["甲", "乙", "株式会社", "合同会社", "有限会社", "第", "条"]
+        ):
+            return "annotation"
+        if normalized in repeated_margin_texts and (
+            bbox.y1 <= page_height * 0.15 or bbox.y0 >= page_height * 0.85
+        ):
+            return "header_footer"
+        if (
+            bbox.y1 <= page_height * 0.06
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
+        if (
+            bbox.y0 >= page_height * 0.96
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
+        return "body"
+
+    def _merge_adjacent_body_candidates(self, candidates: list[dict]) -> list[dict]:
+        if not candidates:
+            return []
+        merged: list[dict] = []
+        for candidate in candidates:
+            if not merged:
+                merged.append(candidate)
+                continue
+            previous = merged[-1]
+            if not self._can_merge_body(previous, candidate):
+                merged.append(candidate)
+                continue
+            combined_source_ids = list(previous["source_block_ids"])
+            for source_id in candidate["source_block_ids"]:
+                if source_id not in combined_source_ids:
+                    combined_source_ids.append(source_id)
+            merged[-1] = {
+                "bbox": self._union_bbox(previous["bbox"], candidate["bbox"]),
+                "text": f"{previous['text'].rstrip()}\n{candidate['text'].lstrip()}",
+                "engine": previous["engine"],
+                "extract_method": previous["extract_method"],
+                "confidence": self._merge_confidence(previous["confidence"], candidate["confidence"]),
+                "block_type": previous["block_type"],
+                "source_block_ids": combined_source_ids,
+                "adoption_reason": f"{previous['adoption_reason']}+body_compatible_merge",
+                "candidate_kind": "body",
+            }
+        return merged
+
+    @staticmethod
+    def _can_merge_body(previous: dict, current: dict) -> bool:
+        if previous.get("candidate_kind") != "body" or current.get("candidate_kind") != "body":
+            return False
+        if previous.get("block_type") != BlockType.TEXT or current.get("block_type") != BlockType.TEXT:
+            return False
+        if previous["extract_method"] != current["extract_method"]:
+            return False
+        prev_text = normalize_text(previous["text"])
+        curr_text = normalize_text(current["text"])
+        if not prev_text or not curr_text:
+            return False
+        if is_annotation_like_text(prev_text) or is_annotation_like_text(curr_text):
+            return False
+        if BlockMerger._is_low_value_ocr_fragment(prev_text, previous.get("confidence")):
+            return False
+        if BlockMerger._is_low_value_ocr_fragment(curr_text, current.get("confidence")):
+            return False
+        if is_page_number_text(prev_text) or is_page_number_text(curr_text):
+            return False
+        if is_article_heading_text(prev_text) or is_article_heading_text(curr_text):
+            return False
+        low_value_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
+        if previous["extract_method"] == ExtractMethod.OCR and len(prev_text) <= 10:
+            if not any(marker in prev_text for marker in low_value_markers):
+                return False
+        if current["extract_method"] == ExtractMethod.OCR and len(curr_text) <= 10:
+            if not any(marker in curr_text for marker in low_value_markers):
+                return False
+        if len(prev_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(prev_text):
+            if not any(marker in prev_text for marker in low_value_markers):
+                return False
+        if len(curr_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(curr_text):
+            if not any(marker in curr_text for marker in low_value_markers):
+                return False
+        if is_fragment_like_text(prev_text) and len(prev_text) <= 12:
+            return False
+        if is_fragment_like_text(curr_text) and len(curr_text) <= 12:
+            return False
+
+        prev_bbox = previous["bbox"]
+        curr_bbox = current["bbox"]
+        overlap_x = max(0.0, min(prev_bbox.x1, curr_bbox.x1) - max(prev_bbox.x0, curr_bbox.x0))
+        min_width = min(prev_bbox.width, curr_bbox.width)
+        if min_width <= 0.0 or overlap_x / min_width < 0.60:
+            return False
+        left_delta = abs(prev_bbox.x0 - curr_bbox.x0)
+        if left_delta > max(12.0, min_width * 0.10):
+            return False
+
+        vertical_gap = curr_bbox.y0 - prev_bbox.y1
+        max_gap = max(14.0, min(prev_bbox.height, curr_bbox.height) * 1.20)
+        if len(curr_text) <= 12 or len(prev_text) <= 12:
+            max_gap = min(max_gap, 10.0)
+        return -2.0 <= vertical_gap <= max_gap
+
+    @staticmethod
+    def _union_bbox(lhs: BBox, rhs: BBox) -> BBox:
+        return BBox(
+            x0=min(lhs.x0, rhs.x0),
+            y0=min(lhs.y0, rhs.y0),
+            x1=max(lhs.x1, rhs.x1),
+            y1=max(lhs.y1, rhs.y1),
+        )
+
+    @staticmethod
+    def _merge_confidence(lhs: float | None, rhs: float | None) -> float | None:
+        if lhs is None:
+            return rhs
+        if rhs is None:
+            return lhs
+        return min(lhs, rhs)
+
+    @staticmethod
+    def _is_low_value_ocr_fragment(text: str, confidence: float | None) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return True
+        if is_article_heading_text(normalized):
+            return False
+        if normalized in {"甲", "乙"}:
+            return False
+        if is_annotation_like_text(normalized):
+            return True
+        if len(normalized) <= 2:
+            return True
+        if len(normalized) <= 4 and not any(token in normalized for token in ["甲", "乙", "第", "条", "法"]):
+            return True
+        if is_fragment_like_text(normalized) and (confidence is None or confidence < 0.95):
+            return True
+        if confidence is not None and confidence < 0.55:
+            return True
+        legal_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社")
+        if len(normalized) <= 8 and confidence is not None and confidence < 0.70:
+            if not any(marker in normalized for marker in legal_markers):
+                return True
+        return False

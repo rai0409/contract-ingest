@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from contract_ingest.config import get_settings
 from contract_ingest.domain.models import OCRExtractionResult, ProcessingIssue
@@ -37,6 +38,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path, help="output directory path")
     parser.add_argument("--doc-id", required=False, type=str, default=None, help="optional document id")
     parser.add_argument("--log-level", required=False, type=str, default="INFO", help="log level")
+    parser.add_argument(
+        "--layout-engine",
+        required=False,
+        type=str,
+        default="current",
+        choices=["current", "ppstructure", "compare"],
+        help="layout compare mode selector (default keeps current production flow)",
+    )
     return parser.parse_args(argv)
 
 
@@ -80,6 +89,8 @@ def run(argv: list[str] | None = None) -> int:
 
         classification = classifier.classify(input_pdf)
         native_result = native_extractor.extract(input_pdf)
+        if args.layout_engine in {"ppstructure", "compare"}:
+            _run_ppstructure_compare_probe(input_pdf, logger)
 
         layout_result = layout_analyzer.analyze(
             pdf_path=input_pdf,
@@ -245,6 +256,27 @@ def _collect_issues(
         deduped.append(issue)
 
     return deduped
+
+
+def _run_ppstructure_compare_probe(input_pdf: Path, logger: Any) -> None:
+    try:
+        from contract_ingest.extract.layout_ppstructure import PPStructureLayoutAdapter
+        from contract_ingest.extract.reading_order_ppstructure import PPStructureReadingOrderAdapter
+    except Exception as exc:
+        logger.warning("ppstructure compare import failed", extra={"error": str(exc)})
+        return
+
+    adapter = PPStructureLayoutAdapter()
+    result = adapter.analyze_pdf(input_pdf)
+    reading_items = PPStructureReadingOrderAdapter().build(result)
+    logger.info(
+        "ppstructure compare probe completed",
+        extra={
+            "ppstructure_block_count": len(result.blocks),
+            "ppstructure_issue_count": len(result.issues),
+            "ppstructure_reading_order_count": len(reading_items),
+        },
+    )
 
 
 
