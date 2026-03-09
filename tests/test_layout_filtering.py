@@ -182,3 +182,90 @@ def test_layout_drops_symbol_heavy_short_fragment_from_body_candidates() -> None
 
     assert role == "annotation"
     assert inferred == BlockType.OTHER
+
+
+def test_layout_top_continuation_is_rescued_by_neighbor_geometry_context() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="本契約に準拠するものとし",
+        bbox=BBox(12.0, 30.0, 560.0, 52.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+        next_text="乙はこれを遵守するものとする。",
+        next_bbox=BBox(13.0, 55.0, 562.0, 79.0),
+    )
+
+    assert role == "body"
+
+
+def test_layout_bottom_continuation_is_rescued_by_neighbor_geometry_context() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="本契約に準拠するものとし",
+        bbox=BBox(12.0, 914.0, 560.0, 938.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+        prev_text="甲は法令を遵守し信義に従い行動するものとする。",
+        prev_bbox=BBox(10.0, 886.0, 559.0, 910.0),
+    )
+
+    assert role == "body"
+
+
+def test_layout_drops_particle_started_truncated_fragment() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="に準拠し",
+        bbox=BBox(10.0, 420.0, 120.0, 440.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type("に準拠し", BBox(10.0, 420.0, 120.0, 440.0), page_height=1000.0)
+
+    assert role == "annotation"
+    assert inferred == BlockType.OTHER
+
+
+def test_layout_repeated_right_side_note_text_is_not_body() -> None:
+    page_map = {
+        1: [
+            NativeTextBlock(
+                page=1,
+                block_id="p1_r",
+                bbox=BBox(x0=505.0, y0=320.0, x1=580.0, y1=340.0),
+                text="オプション条項",
+                raw_text="オプション条項",
+                char_count=len("オプション条項"),
+                garbled_ratio=0.0,
+                extract_method=ExtractMethod.NATIVE_TEXT,
+                searchable=False,
+                block_type=BlockType.TEXT,
+                metadata={},
+            ),
+            _make_native_block(1, "p1_b", "本文", y0=500.0, y1=525.0, searchable=True),
+        ],
+        2: [
+            NativeTextBlock(
+                page=2,
+                block_id="p2_r",
+                bbox=BBox(x0=507.0, y0=322.0, x1=580.0, y1=342.0),
+                text="オプション条項",
+                raw_text="オプション条項",
+                char_count=len("オプション条項"),
+                garbled_ratio=0.0,
+                extract_method=ExtractMethod.NATIVE_TEXT,
+                searchable=False,
+                block_type=BlockType.TEXT,
+                metadata={},
+            ),
+            _make_native_block(2, "p2_b", "本文", y0=510.0, y1=535.0, searchable=True),
+        ],
+    }
+
+    repeated = LayoutAnalyzer._collect_repeated_margin_texts(page_map)
+    role = LayoutAnalyzer._classify_text_role(
+        text="オプション条項",
+        bbox=BBox(560.0, 320.0, 690.0, 340.0),
+        page_height=1000.0,
+        repeated_margin_texts=repeated,
+    )
+
+    assert "オプション条項" in repeated
+    assert role in {"annotation", "header_footer"}
