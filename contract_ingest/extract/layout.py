@@ -202,12 +202,19 @@ class LayoutAnalyzer:
         repeated_margin_texts: set[str],
     ) -> list[LayoutRegion]:
         regions: list[LayoutRegion] = []
-        for block in native_blocks:
+        ordered_blocks = sorted(native_blocks, key=lambda b: (b.bbox.y0, b.bbox.x0))
+        for idx, block in enumerate(ordered_blocks):
+            prev_block = ordered_blocks[idx - 1] if idx > 0 else None
+            next_block = ordered_blocks[idx + 1] if idx + 1 < len(ordered_blocks) else None
             text_role = self._classify_text_role(
                 text=block.text,
                 bbox=block.bbox,
                 page_height=page_height,
                 repeated_margin_texts=repeated_margin_texts,
+                prev_text=prev_block.text if prev_block is not None else None,
+                prev_bbox=prev_block.bbox if prev_block is not None else None,
+                next_text=next_block.text if next_block is not None else None,
+                next_bbox=next_block.bbox if next_block is not None else None,
             )
             weak = (
                 block.char_count < self.settings.min_block_text_chars
@@ -244,14 +251,17 @@ class LayoutAnalyzer:
     @staticmethod
     def _collect_repeated_margin_texts(blocks_by_page: dict[int, list]) -> set[str]:
         page_max_y: dict[int, float] = {}
+        page_max_x: dict[int, float] = {}
         for page_no, blocks in blocks_by_page.items():
             if not blocks:
                 continue
             page_max_y[page_no] = max(float(block.bbox.y1) for block in blocks)
+            page_max_x[page_no] = max(float(block.bbox.x1) for block in blocks)
 
         counts: dict[str, set[int]] = {}
         for page_no, blocks in blocks_by_page.items():
             page_height = page_max_y.get(page_no, 0.0)
+            page_width = page_max_x.get(page_no, 0.0)
             if page_height <= 0.0:
                 continue
             for block in blocks:
@@ -259,7 +269,13 @@ class LayoutAnalyzer:
                 if not text or len(text) > 80 or is_article_heading_text(text):
                     continue
                 in_margin = block.bbox.y1 <= page_height * 0.12 or block.bbox.y0 >= page_height * 0.88
-                if not in_margin:
+                right_side_note = (
+                    page_width > 0.0
+                    and block.bbox.x0 >= page_width * 0.82
+                    and block.bbox.width <= page_width * 0.24
+                    and len(text) <= 40
+                )
+                if not in_margin and not right_side_note:
                     continue
                 counts.setdefault(text, set()).add(page_no)
 
@@ -271,6 +287,10 @@ class LayoutAnalyzer:
         bbox: BBox,
         page_height: float,
         repeated_margin_texts: set[str],
+        prev_text: str | None = None,
+        prev_bbox: BBox | None = None,
+        next_text: str | None = None,
+        next_bbox: BBox | None = None,
     ) -> str:
         normalized = normalize_text(text)
         if not normalized:
@@ -281,6 +301,18 @@ class LayoutAnalyzer:
             return "annotation"
         if is_page_number_text(normalized):
             return "header_footer"
+        if normalized in repeated_margin_texts:
+            return "header_footer"
+        if LayoutAnalyzer._looks_like_continuation_with_context(
+            text=normalized,
+            bbox=bbox,
+            page_height=page_height,
+            prev_text=prev_text,
+            prev_bbox=prev_bbox,
+            next_text=next_text,
+            next_bbox=next_bbox,
+        ):
+            return "body"
         if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
             return "body"
         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
@@ -304,10 +336,6 @@ class LayoutAnalyzer:
             token in normalized for token in ["甲", "乙", "株式会社", "合同会社", "有限会社", "第", "条"]
         ):
             return "annotation"
-        if normalized in repeated_margin_texts and (
-            bbox.y1 <= page_height * 0.15 or bbox.y0 >= page_height * 0.85
-        ):
-            return "header_footer"
         if (
             bbox.y1 <= page_height * 0.06
             and len(normalized) <= 24
@@ -339,6 +367,49 @@ class LayoutAnalyzer:
         return len(text) >= 24 and hiragana_count >= 3
 
     @staticmethod
+    def _looks_like_continuation_with_context(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        prev_text: str | None,
+        prev_bbox: BBox | None,
+        next_text: str | None,
+        next_bbox: BBox | None,
+    ) -> bool:
+        if len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text):
+            return False
+
+        def _compatible_neighbor(candidate_text: str | None, candidate_bbox: BBox | None, gap: float) -> bool:
+            if candidate_text is None or candidate_bbox is None:
+                return False
+            candidate = normalize_text(candidate_text)
+            if not candidate:
+                return False
+            if is_page_number_text(candidate) or is_annotation_like_text(candidate):
+                return False
+            if LayoutAnalyzer._is_low_value_fragment_text(candidate):
+                return False
+            if len(candidate) < 10 and not LayoutAnalyzer._looks_like_sentence_text(candidate):
+                return False
+            min_width = min(bbox.width, candidate_bbox.width)
+            max_width = max(bbox.width, candidate_bbox.width, 1.0)
+            width_ratio = min_width / max_width
+            x0_delta = abs(bbox.x0 - candidate_bbox.x0)
+            x0_ok = x0_delta <= max(20.0, min_width * 0.12)
+            width_ok = width_ratio >= 0.72
+            gap_ok = -4.0 <= gap <= max(56.0, min(bbox.height, candidate_bbox.height) * 2.20)
+            return x0_ok and width_ok and gap_ok
+
+        prev_ok = _compatible_neighbor(prev_text, prev_bbox, bbox.y0 - prev_bbox.y1) if prev_bbox is not None else False
+        next_ok = _compatible_neighbor(next_text, next_bbox, next_bbox.y0 - bbox.y1) if next_bbox is not None else False
+        if prev_ok and next_ok:
+            return True
+        if prev_ok or next_ok:
+            near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
+            return near_margin or len(text) >= 18
+        return False
+
+    @staticmethod
     def _is_low_value_fragment_text(text: str) -> bool:
         if not text:
             return True
@@ -347,16 +418,27 @@ class LayoutAnalyzer:
         if text in {"甲", "乙"}:
             return False
         legal_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
-        if any(marker in text for marker in legal_markers):
-            return False
+        has_legal_marker = any(marker in text for marker in legal_markers)
         symbol_like = sum(1 for ch in text if ch in "[]{}<>|/\\*#@")
         ascii_alnum = sum(1 for ch in text if ch.isascii() and ch.isalnum())
         kana_kanji = sum(1 for ch in text if ("\u3040" <= ch <= "\u30FF") or ("\u4E00" <= ch <= "\u9FFF"))
+        katakana = sum(1 for ch in text if "\u30A0" <= ch <= "\u30FF")
+        starts_with_particle = text[0] in {"の", "て", "に", "を", "が", "で", "と", "も"}
+        ends_with_fragment = text[-1] in {"の", "て", "に", "を", "が", "で", "と", "、", "，", "-", "〜", "~"}
         if len(text) <= 10 and symbol_like >= 2:
             return True
         if len(text) <= 12 and ascii_alnum >= max(3, int(len(text) * 0.6)) and kana_kanji <= 2:
             return True
         if len(text) <= 8 and symbol_like >= 1 and kana_kanji <= 2:
+            return True
+        if len(text) <= 14 and katakana >= 2 and ascii_alnum >= 2 and symbol_like >= 1:
+            return True
+        if len(text) <= 16 and (starts_with_particle or ends_with_fragment):
+            if not LayoutAnalyzer._looks_like_sentence_text(text):
+                return True
+        if has_legal_marker and len(text) <= 16 and (starts_with_particle or ends_with_fragment):
+            return True
+        if has_legal_marker and len(text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(text):
             return True
         return False
 
