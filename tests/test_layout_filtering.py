@@ -269,3 +269,49 @@ def test_layout_repeated_right_side_note_text_is_not_body() -> None:
 
     assert "オプション条項" in repeated
     assert role in {"annotation", "header_footer"}
+
+
+def test_layout_table_like_block_is_not_body_and_infers_table() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="項目    数量    単価    金額",
+        bbox=BBox(10.0, 320.0, 560.0, 350.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(
+        "項目    数量    単価    金額",
+        BBox(10.0, 320.0, 560.0, 350.0),
+        page_height=1000.0,
+    )
+
+    assert role != "body"
+    assert inferred == BlockType.TABLE
+
+
+def test_layout_appendix_heading_is_kept_as_text() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="別紙１（仕様書）",
+        bbox=BBox(10.0, 180.0, 260.0, 210.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(
+        "別紙１（仕様書）",
+        BBox(10.0, 180.0, 260.0, 210.0),
+        page_height=1000.0,
+    )
+
+    assert role == "body"
+    assert inferred == BlockType.TEXT
+
+
+def test_layout_repeated_header_footer_like_text_is_not_body() -> None:
+    repeated = {"機密文書"}
+    role = LayoutAnalyzer._classify_text_role(
+        text="機密文書",
+        bbox=BBox(10.0, 16.0, 180.0, 32.0),
+        page_height=1000.0,
+        repeated_margin_texts=repeated,
+    )
+
+    assert role == "header_footer"

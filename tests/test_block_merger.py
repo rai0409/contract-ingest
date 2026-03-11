@@ -308,3 +308,73 @@ def test_classify_candidate_kind_does_not_mark_bottom_body_as_signature_without_
     )
 
     assert kind == "body"
+
+
+def test_merger_keeps_annotation_block_separate_from_body() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "本契約に関する通知は書面で行うものとする。", x0=20.0, y0=100.0, x1=560.0, y1=126.0),
+            _native_block("p1_n002", "[A1]", x0=22.0, y0=128.0, x1=120.0, y1=146.0, searchable=False),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+
+    assert len(merged.blocks) == 2
+    assert merged.blocks[0].block_type == BlockType.TEXT
+    assert merged.blocks[1].block_type == BlockType.OTHER
+    assert merged.blocks[1].searchable is False
+
+
+def test_merger_does_not_merge_table_like_block_into_body() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "本契約に基づく委託料は次のとおりとする。", x0=20.0, y0=100.0, x1=560.0, y1=126.0),
+            _native_block("p1_n002", "項目 数量 単価 金額", x0=20.0, y0=128.0, x1=560.0, y1=154.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+
+    assert len(merged.blocks) == 2
+    assert merged.blocks[0].block_type == BlockType.TEXT
+    assert merged.blocks[1].block_type == BlockType.TABLE
+    assert merged.blocks[1].searchable is False
+
+
+def test_merger_merges_appendix_heading_with_appendix_text_when_geometry_is_continuous() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "別紙1（仕様書）", x0=20.0, y0=180.0, x1=360.0, y1=205.0),
+            _native_block("p1_n002", "別紙1仕様を次のとおり定める。", x0=22.0, y0=208.0, x1=362.0, y1=235.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+
+    assert len(merged.blocks) == 1
+    assert merged.blocks[0].block_type == BlockType.TEXT
+    assert "別紙1（仕様書）\n別紙1仕様を次のとおり定める。" == merged.blocks[0].text
+
+
+def test_merger_does_not_merge_body_with_close_footer_like_block() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "本契約に関する紛争は協議により解決する。", x0=20.0, y0=920.0, x1=560.0, y1=944.0),
+            _native_block("p1_n002", "1/5", x0=24.0, y0=946.0, x1=90.0, y1=962.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+
+    assert len(merged.blocks) == 2
+    assert merged.blocks[0].block_type == BlockType.TEXT
+    assert merged.blocks[1].block_type == BlockType.FOOTER

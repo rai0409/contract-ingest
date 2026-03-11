@@ -112,6 +112,7 @@ class ContractFieldSchema(BaseModel):
     reason: str
     evidence_refs: list[EvidenceRefSchema] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
+    quality: dict[str, Any] | None = None
 
     @field_validator("field_name")
     @classmethod
@@ -208,6 +209,14 @@ class ReviewItemSchema(BaseModel):
     page_refs: list[int]
     block_ids: list[str]
     field_names: list[str]
+    field: str | None = None
+    candidate_value: str | bool | list[str] | None = None
+    why_rejected: str | None = None
+    page: int | None = Field(default=None, ge=1)
+    bbox: BBoxSchema | None = None
+    snippet: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    suggested_action: str | None = None
 
 
 class ReviewSummarySchema(BaseModel):
