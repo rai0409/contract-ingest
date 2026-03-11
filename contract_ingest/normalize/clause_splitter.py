@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from contract_ingest.config import Settings, get_settings
 from contract_ingest.domain.enums import BlockType, ErrorSeverity, ReasonCode
@@ -24,7 +24,6 @@ _STRONG_ARTICLE_TOKEN_RE = re.compile(
 _APPENDIX_RE = re.compile(r"^\s*(?P<no>附則|別紙|別表)\s*(?:[（(](?P<title>[^）)]+)[）)])?\s*$")
 _PAREN_TITLE_ONLY_RE = re.compile(r"^\s*[（(](?P<title>[^）)]{1,60})[）)]\s*$")
 _ITEM_ONLY_RE = re.compile(r"^\s*(?:\(?[0-9０-９]{1,2}\)?|[①-⑳])\s*$")
-_ORPHAN_FRAGMENT_HEAD_RE = re.compile(r"^\s*[のてにをがでと、，]")
 
 
 @dataclass
@@ -165,7 +164,6 @@ class ClauseSplitter:
                 )
             )
 
-        clauses = self._postprocess_clauses(clauses)
         issues = self._evaluate_stability(clauses)
         return ClauseSplitResult(clauses=clauses, issues=issues)
 
@@ -202,8 +200,6 @@ class ClauseSplitter:
         previous_article_number: int | None,
         block: EvidenceBlock,
     ) -> bool:
-        if not ClauseSplitter._is_valid_clause_heading(heading_text=heading_text, heading=heading, block=block):
-            return False
         if is_annotation_like_text(heading_text):
             return False
         if heading[1] is None and len(heading_text) <= 6 and not block.searchable and not heading[0].startswith("第"):
@@ -219,30 +215,6 @@ class ClauseSplitter:
                 return False
         if current is not None and current.clause_no == heading[0] and len(heading_text) < 20:
             return False
-        return True
-
-    @staticmethod
-    def _is_valid_clause_heading(
-        heading_text: str,
-        heading: tuple[str, str | None],
-        block: EvidenceBlock,
-    ) -> bool:
-        normalized = normalize_text(heading_text)
-        if not normalized:
-            return False
-        if is_annotation_like_text(normalized):
-            return False
-        if len(normalized) > 100:
-            return False
-        if any(token in normalized for token in ["コメント", "解説", "ひな形", "オプション条項"]):
-            return False
-        if heading[0].startswith("第"):
-            if parse_article_number(heading[0]) is None:
-                return False
-            if _ITEM_ONLY_RE.fullmatch(normalized):
-                return False
-            if not block.searchable and len(normalized) <= 8 and heading[1] is None:
-                return False
         return True
 
     @staticmethod
@@ -334,7 +306,6 @@ class ClauseSplitter:
 
         short_count = 0
         heading_only_runs = 0
-        low_boundary_count = 0
         previous_was_heading_only = False
         previous_number: int | None = None
 
@@ -349,8 +320,6 @@ class ClauseSplitter:
             if heading_only and previous_was_heading_only:
                 heading_only_runs += 1
             previous_was_heading_only = heading_only
-            if "LOW_BOUNDARY_CONFIDENCE" in clause.flags:
-                low_boundary_count += 1
 
             article_number = parse_article_number(clause.clause_no)
             if previous_number is not None and article_number is not None and article_number < previous_number:
@@ -391,16 +360,6 @@ class ClauseSplitter:
                 )
             )
 
-        if low_boundary_count >= 2:
-            issues.append(
-                ProcessingIssue(
-                    severity=ErrorSeverity.REVIEW,
-                    reason_code=ReasonCode.UNSTABLE_CLAUSE_SPLIT,
-                    message="multiple low-confidence clause boundaries detected",
-                    details={"low_boundary_count": low_boundary_count},
-                )
-            )
-
         unstable_reasons = {
             ReasonCode.REVERSED_CLAUSE_NUMBER.value,
             ReasonCode.CONSECUTIVE_CLAUSE_HEADINGS.value,
@@ -420,133 +379,3 @@ class ClauseSplitter:
             )
 
         return issues
-
-    def _postprocess_clauses(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
-        if not clauses:
-            return clauses
-        result = self._attach_orphan_paragraphs(clauses)
-        result = self._merge_trailing_clause_fragments(result)
-        result = self._repair_reversed_clause_numbers(result)
-
-        for idx in range(1, len(result)):
-            score = self._score_clause_boundary_confidence(result[idx - 1], result[idx])
-            if score < 0.45 and "LOW_BOUNDARY_CONFIDENCE" not in result[idx].flags:
-                result[idx].flags.append("LOW_BOUNDARY_CONFIDENCE")
-        return result
-
-    def _repair_reversed_clause_numbers(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
-        if not clauses:
-            return clauses
-        repaired: list[ClauseUnit] = [clauses[0]]
-        for clause in clauses[1:]:
-            prev = repaired[-1]
-            prev_no = parse_article_number(prev.clause_no)
-            curr_no = parse_article_number(clause.clause_no)
-            reversed_number = prev_no is not None and curr_no is not None and curr_no < prev_no
-            if not reversed_number:
-                repaired.append(clause)
-                continue
-
-            text_len = len(normalize_text(clause.text))
-            line_count = len([line for line in clause.text.splitlines() if line.strip()])
-            boundary_score = self._score_clause_boundary_confidence(prev, clause)
-            if text_len <= 80 and line_count <= 3 and boundary_score < 0.45:
-                repaired[-1] = self._merge_clause_units(prev, clause, reason_flag="repaired_reversed_clause_number")
-                continue
-            if ReasonCode.REVERSED_CLAUSE_NUMBER.value not in clause.flags:
-                clause.flags.append(ReasonCode.REVERSED_CLAUSE_NUMBER.value)
-            repaired.append(clause)
-        return repaired
-
-    def _merge_trailing_clause_fragments(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
-        if not clauses:
-            return clauses
-        merged: list[ClauseUnit] = [clauses[0]]
-        for clause in clauses[1:]:
-            prev = merged[-1]
-            if clause.clause_no is not None:
-                merged.append(clause)
-                continue
-            compact = normalize_text(clause.text)
-            line_count = len([line for line in clause.text.splitlines() if line.strip()])
-            fragment_like = (
-                len(compact) <= max(20, self.settings.min_clause_text_chars // 2)
-                or _ORPHAN_FRAGMENT_HEAD_RE.match(compact) is not None
-                or (line_count <= 2 and is_fragment_like_text(compact))
-            )
-            if fragment_like and prev.clause_no is not None:
-                merged[-1] = self._merge_clause_units(prev, clause, reason_flag="merged_trailing_fragment")
-                continue
-            merged.append(clause)
-        return merged
-
-    def _attach_orphan_paragraphs(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
-        if not clauses:
-            return clauses
-        attached: list[ClauseUnit] = [clauses[0]]
-        for clause in clauses[1:]:
-            prev = attached[-1]
-            if clause.clause_no is not None:
-                attached.append(clause)
-                continue
-            compact = normalize_text(clause.text)
-            if not compact or is_annotation_like_text(compact):
-                attached.append(clause)
-                continue
-            orphan_like = (
-                len(compact) <= 140
-                and not compact.startswith("第")
-                and (
-                    _ORPHAN_FRAGMENT_HEAD_RE.match(compact) is not None
-                    or self._score_clause_boundary_confidence(prev, clause) < 0.55
-                )
-            )
-            if orphan_like and prev.clause_no is not None:
-                attached[-1] = self._merge_clause_units(prev, clause, reason_flag="attached_orphan_paragraph")
-                continue
-            attached.append(clause)
-        return attached
-
-    @staticmethod
-    def _score_clause_boundary_confidence(previous: ClauseUnit, current: ClauseUnit) -> float:
-        score = 0.55
-        prev_no = parse_article_number(previous.clause_no)
-        curr_no = parse_article_number(current.clause_no)
-        if prev_no is not None and curr_no is not None:
-            if curr_no == prev_no + 1:
-                score += 0.30
-            elif curr_no <= prev_no:
-                score -= 0.40
-        elif current.clause_no is None:
-            score -= 0.18
-
-        page_gap = current.page_start - previous.page_end
-        if page_gap <= 1:
-            score += 0.08
-        else:
-            score -= 0.10
-
-        curr_text = normalize_text(current.text)
-        if len(curr_text) <= 16:
-            score -= 0.10
-        if _ORPHAN_FRAGMENT_HEAD_RE.match(curr_text):
-            score -= 0.15
-        if curr_text.endswith(("の", "て", "に", "を", "が", "で", "と", "、")):
-            score -= 0.08
-        return max(0.0, min(1.0, score))
-
-    @staticmethod
-    def _merge_clause_units(previous: ClauseUnit, current: ClauseUnit, reason_flag: str) -> ClauseUnit:
-        merged_block_ids = unique_preserve_order(previous.block_ids + current.block_ids)
-        merged_refs = list(previous.evidence_refs) + [ref for ref in current.evidence_refs if ref not in previous.evidence_refs]
-        merged_flags = list(previous.flags)
-        if reason_flag not in merged_flags:
-            merged_flags.append(reason_flag)
-        return replace(
-            previous,
-            text=f"{previous.text.rstrip()}\n{current.text.lstrip()}",
-            page_end=max(previous.page_end, current.page_end),
-            block_ids=merged_block_ids,
-            evidence_refs=merged_refs,
-            flags=merged_flags,
-        )

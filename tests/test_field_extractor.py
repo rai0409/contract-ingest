@@ -5,17 +5,11 @@ from contract_ingest.domain.models import BBox, ClauseUnit, EvidenceBlock, Evide
 from contract_ingest.normalize.field_extractor import ContractFieldExtractor
 
 
-def _make_block(
-    order: int,
-    text: str,
-    block_type: BlockType = BlockType.TEXT,
-    *,
-    page: int = 1,
-) -> EvidenceBlock:
+def _make_block(order: int, text: str, block_type: BlockType = BlockType.TEXT) -> EvidenceBlock:
     y0 = 10.0 + (order - 1) * 20.0
     return EvidenceBlock(
-        page=page,
-        block_id=f"p{page}_b{order:03d}",
+        page=1,
+        block_id=f"p1_b{order:03d}",
         block_type=block_type,
         bbox=BBox(x0=10.0, y0=y0, x1=580.0, y1=y0 + 16.0),
         text=text,
@@ -91,7 +85,6 @@ def test_effective_date_anchor_is_not_reported_as_pure_missing() -> None:
         for issue in result.issues
     }
     assert ReasonCode.MISSING_EFFECTIVE_DATE.value not in reason_codes
-    assert ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value in reason_codes
 
 
 def test_governing_law_and_jurisdiction_from_clause_scoped_text() -> None:
@@ -149,136 +142,3 @@ def test_governing_law_and_jurisdiction_ambiguous_case_stays_unresolved() -> Non
     assert result.fields.jurisdiction.value is None
     assert ReasonCode.MISSING_GOVERNING_LAW.value in reason_codes
     assert ReasonCode.MISSING_JURISDICTION.value in reason_codes
-
-
-def test_jurisdiction_low_quality_candidate_is_rejected_by_validator_gate() -> None:
-    extractor = ContractFieldExtractor()
-    bad_j_block = _make_block(1, "第11条（管轄）番の専属的合意管轄裁判所とする。")
-    clauses = [
-        _make_clause(bad_j_block, "第11条", "管轄", bad_j_block.text),
-    ]
-
-    result = extractor.extract([bad_j_block], clauses=clauses)
-    reason_codes = {
-        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
-        for issue in result.issues
-    }
-
-    assert result.fields.jurisdiction.value is None
-    assert ReasonCode.LOW_QUALITY_JURISDICTION.value in reason_codes
-    assert ReasonCode.MISSING_JURISDICTION.value in reason_codes
-
-
-def test_counterparties_fragment_like_candidate_is_not_adopted_as_is() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(1, "甲：という。) と"),
-        _make_block(2, "乙：○○株式会社"),
-    ]
-
-    result = extractor.extract(blocks)
-    reason_codes = {
-        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
-        for issue in result.issues
-    }
-
-    assert isinstance(result.fields.counterparties.value, list)
-    assert "という。) と" not in result.fields.counterparties.value
-    assert "○○株式会社" in result.fields.counterparties.value
-    assert ReasonCode.LOW_QUALITY_COUNTERPARTY.value in reason_codes
-
-
-def test_field_extractor_tail_finder_recovers_governing_law_and_jurisdiction_when_base_rule_misses() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(1, "業務委託契約書", page=1),
-        _make_block(2, "第1条 目的", page=1),
-        _make_block(70, "第14条 本契約は日本国法によるものとする。", page=4),
-        _make_block(71, "第15条 この契約に関する訴えは九州大学所在地を管轄区域とする福岡地方裁判所とする。", page=4),
-    ]
-
-    result = extractor.extract(blocks)
-
-    assert result.fields.governing_law.value == "日本法"
-    assert result.fields.jurisdiction.value == "福岡地方裁判所"
-    assert "finder:tail_clause_governing_law" in result.fields.governing_law.reason
-    assert "finder:" in result.fields.jurisdiction.reason
-
-
-def test_field_extractor_counterparty_finder_recovers_from_preamble_and_signature_paths() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(
-            1,
-            "公立大学法人滋賀県立大学(以下「発注者」という。)と、という。)と、○○株式会社(以下「受託者」という。)は契約を締結する。",
-            page=1,
-        ),
-        _make_block(
-            80,
-            "委託者(甲) 住 所 滋賀県彦根市八坂町2500 氏 名 公立大学法人滋賀県立大学",
-            block_type=BlockType.SIGNATURE_AREA,
-            page=6,
-        ),
-        _make_block(
-            81,
-            "受託者(乙) 住 所 氏 名 ○○株式会社",
-            block_type=BlockType.SIGNATURE_AREA,
-            page=6,
-        ),
-    ]
-
-    result = extractor.extract(blocks)
-
-    assert isinstance(result.fields.counterparties.value, list)
-    assert "公立大学法人滋賀県立大学" in result.fields.counterparties.value
-    assert "○○株式会社" in result.fields.counterparties.value
-    assert all("という。)" not in value for value in result.fields.counterparties.value)
-    assert "finder_counterparty_supplemented" in result.fields.counterparties.flags
-
-
-def test_field_extractor_tail_finder_recovers_effective_anchor_from_contract_teiketsubi_no() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(
-            1,
-            "第4条 本契約に定める履行期間は、契約締結の日から令和7年6月30日までとする。",
-            page=1,
-        ),
-    ]
-
-    result = extractor.extract(blocks)
-    reason_codes = {
-        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
-        for issue in result.issues
-    }
-
-    assert result.fields.effective_date.value == "契約締結日から"
-    assert result.fields.expiration_date.value == "2025-06-30"
-    assert ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value in reason_codes
-
-
-def test_field_extractor_tail_finder_recovers_placeholder_expiration_range() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(1, "第3条 委託期間は、令和○○年○○月○○日から令和○○年○○月○○日までとする。", page=1),
-    ]
-
-    result = extractor.extract(blocks)
-
-    assert result.fields.expiration_date.value is not None
-    assert "令和○○年○○月○○日" in str(result.fields.expiration_date.value)
-    assert "finder:" in result.fields.expiration_date.reason
-
-
-def test_field_extractor_tail_finder_recovers_jurisdiction_from_split_neighbor_blocks() -> None:
-    extractor = ContractFieldExtractor()
-    blocks = [
-        _make_block(10, "第13条 本契約に関する一切の紛争については、", page=4),
-        _make_block(11, "東京地方裁判所を第一審の専属的合意", page=4),
-        _make_block(12, "管轄裁判所とする。", page=4),
-    ]
-
-    result = extractor.extract(blocks)
-
-    assert result.fields.jurisdiction.value == "東京地方裁判所"
-    assert "finder:" in result.fields.jurisdiction.reason

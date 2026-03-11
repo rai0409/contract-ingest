@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 import fitz
 
@@ -26,12 +25,6 @@ from contract_ingest.utils.text import (
     is_noise_text,
     is_page_number_text,
     normalize_text,
-)
-
-_APPENDIX_HEADING_RE = re.compile(
-    r"^\s*(?:別紙|別表|別添|付属資料|仕様書)"
-    r"(?:\s*[0-9０-９一二三四五六七八九十百千〇零]+)?"
-    r"(?:\s|$|[:：（(])"
 )
 
 
@@ -304,20 +297,11 @@ class LayoutAnalyzer:
             return "annotation"
         if is_article_heading_text(normalized):
             return "body"
-        if LayoutAnalyzer._is_appendix_heading(normalized):
-            return "body"
         if is_annotation_like_text(normalized):
-            return "annotation"
-        if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
             return "annotation"
         if is_page_number_text(normalized):
             return "header_footer"
-        if LayoutAnalyzer._looks_like_header_footer_block(
-            normalized,
-            bbox=bbox,
-            page_height=page_height,
-            repeated_margin_texts=repeated_margin_texts,
-        ):
+        if normalized in repeated_margin_texts:
             return "header_footer"
         if LayoutAnalyzer._looks_like_continuation_with_context(
             text=normalized,
@@ -335,8 +319,6 @@ class LayoutAnalyzer:
             return "annotation"
         if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
             return "signature"
-        if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
-            return "annotation"
         if (
             len(normalized) <= 8
             and not LayoutAnalyzer._looks_like_sentence_text(normalized)
@@ -354,6 +336,20 @@ class LayoutAnalyzer:
             token in normalized for token in ["甲", "乙", "株式会社", "合同会社", "有限会社", "第", "条"]
         ):
             return "annotation"
+        if (
+            bbox.y1 <= page_height * 0.06
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
+        if (
+            bbox.y0 >= page_height * 0.96
+            and len(normalized) <= 24
+            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
+        ):
+            return "header_footer"
         return "body"
 
     @staticmethod
@@ -369,83 +365,6 @@ class LayoutAnalyzer:
         if len(text) >= 16 and hiragana_count >= 5:
             return True
         return len(text) >= 24 and hiragana_count >= 3
-
-    @staticmethod
-    def _looks_like_annotation_column(text: str, bbox: BBox, page_height: float) -> bool:
-        if not text:
-            return False
-        if LayoutAnalyzer._looks_like_sentence_text(text):
-            return False
-        if page_height <= 0:
-            return False
-        narrow_column = bbox.width <= 170.0
-        right_side = bbox.x0 >= 420.0
-        shortish = len(text) <= 24
-        annotation_token = any(token in text for token in ["注", "備考", "※", "参照", "コメント", "A1", "A2"])
-        marker_prefix = bool(re.match(r"^\s*(?:\[[A-Za-z0-9]{1,4}\]|[※＊*・\-])", text))
-        return right_side and narrow_column and shortish and (annotation_token or marker_prefix)
-
-    @staticmethod
-    def _looks_like_header_footer_block(
-        text: str,
-        bbox: BBox,
-        page_height: float,
-        repeated_margin_texts: set[str],
-    ) -> bool:
-        if not text:
-            return False
-        if text in repeated_margin_texts:
-            return True
-        if is_page_number_text(text):
-            return True
-        if LayoutAnalyzer._looks_like_sentence_text(text):
-            return False
-        if (
-            bbox.y1 <= page_height * 0.06
-            and len(text) <= 24
-            and not any(token in text for token in ["契約", "条", "甲", "乙"])
-        ):
-            return True
-        if (
-            bbox.y0 >= page_height * 0.96
-            and len(text) <= 24
-            and not any(token in text for token in ["契約", "条", "甲", "乙"])
-        ):
-            return True
-        return False
-
-    @staticmethod
-    def _is_table_like_block(text: str, bbox: BBox, page_height: float) -> bool:
-        if not text:
-            return False
-        if "|" in text or "\t" in text:
-            return True
-        if bbox.width >= 240.0:
-            spaced_tokens = [part for part in text.split(" ") if part]
-            if len(spaced_tokens) >= 3:
-                short_cells = sum(1 for part in spaced_tokens if len(part) <= 8)
-                if short_cells >= 3 and not LayoutAnalyzer._looks_like_sentence_text(text):
-                    return True
-        if "  " in text and len(text) <= 80:
-            return True
-        if page_height <= 0:
-            return False
-        segments = [part for part in re.split(r"[ \t]{2,}", text) if part]
-        if len(segments) >= 3 and len(text) <= 90:
-            short_cells = sum(1 for part in segments if len(part) <= 8)
-            if short_cells >= 2:
-                return True
-        numeric_like = sum(1 for ch in text if ch.isdigit() or ch in ",./:%")
-        if len(text) >= 8 and numeric_like / max(len(text), 1) >= 0.45 and bbox.width > 260.0:
-            return True
-        return False
-
-    @staticmethod
-    def _is_appendix_heading(text: str) -> bool:
-        normalized = normalize_text(text)
-        if not normalized:
-            return False
-        return bool(_APPENDIX_HEADING_RE.match(normalized))
 
     @staticmethod
     def _looks_like_continuation_with_context(
@@ -613,27 +532,12 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
         return BlockType.OTHER
     if is_page_number_text(normalized):
         return BlockType.FOOTER
-    if LayoutAnalyzer._looks_like_header_footer_block(
-        normalized,
-        bbox=bbox,
-        page_height=page_height,
-        repeated_margin_texts=set(),
-    ):
-        if bbox.y1 <= page_height * 0.10:
-            return BlockType.HEADER
-        return BlockType.FOOTER
-    if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
-        return BlockType.OTHER
-    if LayoutAnalyzer._is_appendix_heading(normalized):
-        return BlockType.TEXT
     if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
         return BlockType.TEXT
     if LayoutAnalyzer._is_low_value_fragment_text(normalized):
         return BlockType.OTHER
     if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
         return BlockType.SIGNATURE_AREA
-    if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
-        return BlockType.TABLE
     if (
         bbox.y1 <= page_height * 0.08
         and len(normalized) <= 28
@@ -650,4 +554,6 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
         return BlockType.SIGNATURE_AREA
     if any(token in normalized for token in ["印", "捺印", "印影"]):
         return BlockType.STAMP_AREA
+    if "|" in normalized or "\t" in normalized or "  " in normalized:
+        return BlockType.TABLE
     return BlockType.TEXT

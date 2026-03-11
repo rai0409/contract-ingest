@@ -175,18 +175,7 @@ class DocumentJsonWriter:
 
     @staticmethod
     def _field_to_dict(field: Any) -> dict[str, Any]:
-        quality: dict[str, Any] = {}
-        if "anchor_only_effective_date" in field.flags:
-            quality["anchor_only"] = True
-        low_quality_flags = [
-            flag
-            for flag in field.flags
-            if flag.startswith("low_quality") or flag.startswith("counterparty_") or flag == "rejected_by_validator"
-        ]
-        if low_quality_flags:
-            quality["quality_flags"] = low_quality_flags
-
-        payload = {
+        return {
             "field_name": field.field_name,
             "value": field.value,
             "confidence": field.confidence,
@@ -203,9 +192,6 @@ class DocumentJsonWriter:
             ],
             "flags": list(field.flags),
         }
-        if quality:
-            payload["quality"] = quality
-        return payload
 
     @staticmethod
     def _issue_to_dict(issue: ProcessingIssue) -> dict[str, Any]:

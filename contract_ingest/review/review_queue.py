@@ -33,14 +33,6 @@ class ReviewQueueBuilder:
                     "page_refs": signal.page_refs,
                     "block_ids": signal.block_ids,
                     "field_names": signal.field_names,
-                    "field": signal.field,
-                    "candidate_value": signal.candidate_value,
-                    "why_rejected": signal.why_rejected,
-                    "page": signal.page,
-                    "bbox": signal.bbox,
-                    "snippet": signal.snippet,
-                    "confidence": signal.confidence,
-                    "suggested_action": signal.action_hint,
                 }
             )
 
