@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from contract_ingest.domain.enums import BlockType, ExtractMethod
-from contract_ingest.domain.models import BBox, EvidenceBlock
+from contract_ingest.domain.enums import ReasonCode
+from contract_ingest.domain.models import BBox, ClauseUnit, EvidenceBlock
 from contract_ingest.normalize.clause_splitter import ClauseSplitter
 
 
-def _make_block(order: int, text: str, block_type: BlockType = BlockType.TEXT) -> EvidenceBlock:
+def _make_block(
+    order: int,
+    text: str,
+    block_type: BlockType = BlockType.TEXT,
+    *,
+    searchable: bool = True,
+) -> EvidenceBlock:
     y0 = 10.0 + (order - 1) * 20.0
     return EvidenceBlock(
         page=1,
@@ -16,7 +23,7 @@ def _make_block(order: int, text: str, block_type: BlockType = BlockType.TEXT) -
         engine="native_text",
         extract_method=ExtractMethod.NATIVE_TEXT,
         confidence=None,
-        searchable=True,
+        searchable=searchable,
         reading_order=order,
         source_hash="sha256:test",
         pipeline_version="0.1.0",
@@ -136,3 +143,81 @@ def test_clause_splitter_excludes_annotation_placeholders_from_clause_material()
     assert "コメントの追加" not in result.clauses[0].text
     assert "[A1]" not in result.clauses[0].text
     assert "(住所)" not in result.clauses[0].text
+
+
+def test_clause_splitter_repairs_short_reversed_clause_number_fragment() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第2条"),
+        _make_block(2, "本契約の有効期間は当事者間の合意による。"),
+        _make_block(3, "第1条 補足として前条の条件を再確認する。"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) == 1
+    assert result.clauses[0].clause_no == "第2条"
+    assert "repaired_reversed_clause_number" in result.clauses[0].flags
+    assert all(issue.reason_code != ReasonCode.REVERSED_CLAUSE_NUMBER for issue in result.issues)
+
+
+def test_clause_splitter_attaches_orphan_paragraph_clause_to_previous_clause() -> None:
+    splitter = ClauseSplitter()
+    prev_block = _make_block(1, "第1条 本契約に関する基本条件を定める。")
+    orphan_block = _make_block(2, "のとおり当事者は誠実に協議する。")
+    previous = ClauseUnit(
+        clause_id="clause_001",
+        clause_no="第1条",
+        clause_title=None,
+        text="第1条 本契約に関する基本条件を定める。",
+        page_start=1,
+        page_end=1,
+        block_ids=[prev_block.block_id],
+        evidence_refs=[splitter._to_ref(prev_block)],
+        flags=[],
+    )
+    orphan = ClauseUnit(
+        clause_id="clause_002",
+        clause_no=None,
+        clause_title=None,
+        text="のとおり当事者は誠実に協議する。",
+        page_start=1,
+        page_end=1,
+        block_ids=[orphan_block.block_id],
+        evidence_refs=[splitter._to_ref(orphan_block)],
+        flags=[],
+    )
+
+    merged = splitter._attach_orphan_paragraphs([previous, orphan])
+
+    assert len(merged) == 1
+    assert "attached_orphan_paragraph" in merged[0].flags
+    assert "のとおり当事者は誠実に協議する。" in merged[0].text
+
+
+def test_clause_splitter_does_not_promote_non_searchable_short_heading_fragment() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条"),
+        _make_block(2, "本契約は当事者間の基本条件を定める。"),
+        _make_block(3, "第2条", searchable=False),
+        _make_block(4, "追加の本文断片。"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) == 1
+    assert result.clauses[0].clause_no == "第1条"
+
+
+def test_clause_splitter_emits_unstable_review_for_heading_only_clauses() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条"),
+        _make_block(2, "第2条"),
+        _make_block(3, "第3条"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert any(issue.reason_code == ReasonCode.UNSTABLE_CLAUSE_SPLIT for issue in result.issues)

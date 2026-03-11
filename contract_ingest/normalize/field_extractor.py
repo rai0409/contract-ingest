@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 import re
+from typing import Callable
 
 from contract_ingest.config import Settings, get_settings
 from contract_ingest.domain.enums import ErrorSeverity, ReasonCode
@@ -13,6 +14,28 @@ from contract_ingest.domain.models import (
     ExtractedField,
     FieldExtractionResult,
     ProcessingIssue,
+)
+from contract_ingest.normalize.contract_type_router import ROUTE_UNKNOWN, infer_contract_type, route_field_bias
+from contract_ingest.normalize.counterparty_finder import (
+    CounterpartyCandidate,
+    find_preamble_counterparties,
+    find_signature_counterparties,
+    merge_counterparty_candidates,
+)
+from contract_ingest.normalize.field_validators import (
+    FieldValidationResult,
+    validate_counterparties,
+    validate_effective_date,
+    validate_expiration_date,
+    validate_governing_law,
+    validate_jurisdiction,
+)
+from contract_ingest.normalize.tail_clause_finder import (
+    TailFieldCandidate,
+    find_tail_effective_date_candidates,
+    find_tail_expiration_candidates,
+    find_tail_governing_law_candidates,
+    find_tail_jurisdiction_candidates,
 )
 from contract_ingest.utils.text import normalize_digits, normalize_text, unique_preserve_order
 from contract_ingest.utils.time import to_iso_date
@@ -45,6 +68,98 @@ class ContractFieldExtractor:
         termination_notice_period = self._extract_termination_notice_period(ordered_blocks)
         governing_law = self._extract_governing_law(ordered_blocks, clauses)
         jurisdiction = self._extract_jurisdiction(ordered_blocks, clauses)
+
+        route = infer_contract_type(
+            ordered_blocks,
+            clauses=clauses,
+            hinted_contract_type=contract_type.value if isinstance(contract_type.value, str) else None,
+        )
+        preamble_counterparty_candidates = find_preamble_counterparties(ordered_blocks)
+        signature_counterparty_candidates = find_signature_counterparties(ordered_blocks)
+        merged_counterparty_candidates = merge_counterparty_candidates(
+            preamble_counterparty_candidates,
+            signature_counterparty_candidates,
+        )
+        counterparties = self._supplement_counterparties_with_finders(
+            current=counterparties,
+            candidates=merged_counterparty_candidates,
+            route=route,
+        )
+
+        governing_law = self._supplement_text_field_with_tail_finder(
+            current=governing_law,
+            candidates=find_tail_governing_law_candidates(ordered_blocks, clauses=clauses, route=route),
+            validator=validate_governing_law,
+            finder_flag="tail_governing_law_finder",
+            replace_margin=self._replacement_margin(route, "governing_law"),
+        )
+        jurisdiction = self._supplement_text_field_with_tail_finder(
+            current=jurisdiction,
+            candidates=find_tail_jurisdiction_candidates(ordered_blocks, clauses=clauses, route=route),
+            validator=validate_jurisdiction,
+            finder_flag="tail_jurisdiction_finder",
+            replace_margin=self._replacement_margin(route, "jurisdiction"),
+        )
+        expiration_date = self._supplement_text_field_with_tail_finder(
+            current=expiration_date,
+            candidates=find_tail_expiration_candidates(ordered_blocks, clauses=clauses, route=route),
+            validator=validate_expiration_date,
+            finder_flag="tail_expiration_finder",
+            replace_margin=self._replacement_margin(route, "expiration_date"),
+        )
+        effective_date = self._supplement_text_field_with_tail_finder(
+            current=effective_date,
+            candidates=find_tail_effective_date_candidates(ordered_blocks, clauses=clauses, route=route),
+            validator=validate_effective_date,
+            finder_flag="tail_effective_finder",
+            replace_margin=self._replacement_margin(route, "effective_date"),
+        )
+
+        counterparties, counterparties_issues = self._apply_field_validation_gate(
+            field=counterparties,
+            validator=validate_counterparties,
+            rejection_reason=ReasonCode.LOW_QUALITY_COUNTERPARTY,
+            accepted_warning_reason=ReasonCode.LOW_QUALITY_COUNTERPARTY,
+            rejection_message="counterparty candidate was rejected by quality gate",
+            accepted_warning_message="counterparty candidate was partially accepted by quality gate",
+        )
+        effective_date, effective_date_issues = self._apply_field_validation_gate(
+            field=effective_date,
+            validator=validate_effective_date,
+            rejection_reason=ReasonCode.MISSING_EFFECTIVE_DATE,
+            accepted_warning_reason=ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE,
+            rejection_message="effective_date candidate was rejected by quality gate",
+            accepted_warning_message="effective_date candidate is anchor-only and requires review",
+        )
+        expiration_date, expiration_date_issues = self._apply_field_validation_gate(
+            field=expiration_date,
+            validator=validate_expiration_date,
+            rejection_reason=ReasonCode.LOW_QUALITY_EXPIRATION_DATE,
+            accepted_warning_reason=ReasonCode.LOW_QUALITY_EXPIRATION_DATE,
+            rejection_message="expiration_date candidate was rejected by quality gate",
+            accepted_warning_message="expiration_date candidate is low quality",
+        )
+        governing_law, governing_law_issues = self._apply_field_validation_gate(
+            field=governing_law,
+            validator=validate_governing_law,
+            rejection_reason=ReasonCode.LOW_QUALITY_GOVERNING_LAW,
+            accepted_warning_reason=ReasonCode.LOW_QUALITY_GOVERNING_LAW,
+            rejection_message="governing_law candidate was rejected by quality gate",
+            accepted_warning_message="governing_law candidate has low quality signal",
+        )
+        jurisdiction, jurisdiction_issues = self._apply_field_validation_gate(
+            field=jurisdiction,
+            validator=validate_jurisdiction,
+            rejection_reason=ReasonCode.LOW_QUALITY_JURISDICTION,
+            accepted_warning_reason=ReasonCode.LOW_QUALITY_JURISDICTION,
+            rejection_message="jurisdiction candidate was rejected by quality gate",
+            accepted_warning_message="jurisdiction candidate has low quality signal",
+        )
+        issues.extend(counterparties_issues)
+        issues.extend(effective_date_issues)
+        issues.extend(expiration_date_issues)
+        issues.extend(governing_law_issues)
+        issues.extend(jurisdiction_issues)
 
         fields = ContractFields(
             contract_type=contract_type,
@@ -112,7 +227,227 @@ class ContractFieldExtractor:
 
     @staticmethod
     def _has_effective_date_anchor(field: ExtractedField) -> bool:
-        return field.reason == "matched_effective_date_anchor_rule"
+        return field.reason == "matched_effective_date_anchor_rule" or "anchor_only_effective_date" in field.flags
+
+    def _apply_field_validation_gate(
+        self,
+        field: ExtractedField,
+        validator: Callable[..., FieldValidationResult],
+        rejection_reason: ReasonCode,
+        accepted_warning_reason: ReasonCode | None,
+        rejection_message: str,
+        accepted_warning_message: str,
+    ) -> tuple[ExtractedField, list[ProcessingIssue]]:
+        if field.value is None:
+            return field, []
+
+        result = validator(
+            field.value,
+            reason=field.reason,
+            confidence=field.confidence,
+        )
+        merged_flags = unique_preserve_order(list(field.flags) + list(result.quality_flags))
+        issues: list[ProcessingIssue] = []
+
+        if not result.accepted:
+            merged_flags = unique_preserve_order(merged_flags + ["rejected_by_validator"])
+            issues.append(
+                self._build_validation_issue(
+                    field=field,
+                    reason_code=rejection_reason,
+                    message=rejection_message,
+                    result=result,
+                )
+            )
+            return (
+                ExtractedField(
+                    field_name=field.field_name,
+                    value=None,
+                    confidence=None,
+                    reason=f"{field.reason};rejected:{result.reason}",
+                    evidence_refs=field.evidence_refs,
+                    flags=merged_flags,
+                ),
+                issues,
+            )
+
+        normalized_value = result.normalized_value
+        normalized_confidence = result.confidence if result.confidence is not None else field.confidence
+        normalized_reason = field.reason
+        accepted_field = ExtractedField(
+            field_name=field.field_name,
+            value=normalized_value,
+            confidence=normalized_confidence,
+            reason=normalized_reason,
+            evidence_refs=field.evidence_refs,
+            flags=merged_flags,
+        )
+
+        if result.anchor_only and accepted_warning_reason is not None:
+            issues.append(
+                self._build_validation_issue(
+                    field=accepted_field,
+                    reason_code=accepted_warning_reason,
+                    message=accepted_warning_message,
+                    result=result,
+                )
+            )
+        elif accepted_warning_reason is not None and (
+            any(flag.endswith("partial_accept") for flag in merged_flags)
+            or "relative_period_only" in merged_flags
+        ):
+            issues.append(
+                self._build_validation_issue(
+                    field=accepted_field,
+                    reason_code=accepted_warning_reason,
+                    message=accepted_warning_message,
+                    result=result,
+                )
+            )
+
+        return accepted_field, issues
+
+    @staticmethod
+    def _build_validation_issue(
+        field: ExtractedField,
+        reason_code: ReasonCode,
+        message: str,
+        result: FieldValidationResult,
+    ) -> ProcessingIssue:
+        first_ref = field.evidence_refs[0] if field.evidence_refs else None
+        return ProcessingIssue(
+            severity=ErrorSeverity.REVIEW,
+            reason_code=reason_code,
+            message=message,
+            page=first_ref.page if first_ref is not None else None,
+            block_id=first_ref.block_id if first_ref is not None else None,
+            details={
+                "field_name": field.field_name,
+                "candidate_value": result.raw_value if result.raw_value is not None else field.value,
+                "why_rejected": result.reason,
+                "confidence": field.confidence,
+                "quality_flags": list(result.quality_flags),
+                "anchor_only": result.anchor_only,
+                "bbox": first_ref.bbox.to_dict() if first_ref is not None else None,
+                "snippet": normalize_text(str(result.raw_value))[:120] if result.raw_value is not None else None,
+            },
+        )
+
+    def _supplement_counterparties_with_finders(
+        self,
+        current: ExtractedField,
+        candidates: list[CounterpartyCandidate],
+        route: str,
+    ) -> ExtractedField:
+        if not candidates:
+            return current
+
+        finder_names = [candidate.name for candidate in candidates if candidate.name]
+        finder_value = unique_preserve_order(finder_names)
+        if not finder_value:
+            return current
+        finder_refs = unique_preserve_order_refs([candidate.evidence_ref for candidate in candidates])
+        finder_confidence = min(0.90, max(candidate.confidence for candidate in candidates))
+        finder_field = ExtractedField(
+            field_name="counterparties",
+            value=finder_value,
+            confidence=finder_confidence,
+            reason=f"finder_counterparty_{route.lower()}",
+            evidence_refs=finder_refs,
+            flags=["finder_counterparty_candidate"],
+        )
+
+        current_eval = validate_counterparties(current.value, reason=current.reason, confidence=current.confidence)
+        finder_eval = validate_counterparties(finder_field.value, reason=finder_field.reason, confidence=finder_field.confidence)
+
+        if not finder_eval.accepted:
+            return current
+        normalized_finder = finder_eval.normalized_value
+        if not isinstance(normalized_finder, list) or not normalized_finder:
+            return current
+
+        if not current_eval.accepted:
+            return ExtractedField(
+                field_name=current.field_name,
+                value=normalized_finder,
+                confidence=finder_eval.confidence if finder_eval.confidence is not None else finder_field.confidence,
+                reason=f"{current.reason};finder_supplemented_counterparty",
+                evidence_refs=unique_preserve_order_refs(finder_refs + current.evidence_refs),
+                flags=unique_preserve_order(list(current.flags) + ["finder_counterparty_supplemented"]),
+            )
+
+        current_names = current_eval.normalized_value if isinstance(current_eval.normalized_value, list) else []
+        if len(current_names) >= 2 and not current_eval.quality_flags:
+            return current
+        should_replace = False
+        if len(normalized_finder) > len(current_names):
+            should_replace = True
+        elif current_eval.quality_flags and len(normalized_finder) >= 2 and len(normalized_finder) >= len(current_names):
+            should_replace = True
+
+        if should_replace:
+            return ExtractedField(
+                field_name=current.field_name,
+                value=normalized_finder,
+                confidence=finder_eval.confidence if finder_eval.confidence is not None else finder_field.confidence,
+                reason=f"{current.reason};finder_supplemented_counterparty",
+                evidence_refs=unique_preserve_order_refs(finder_refs + current.evidence_refs),
+                flags=unique_preserve_order(list(current.flags) + ["finder_counterparty_supplemented"]),
+            )
+        return current
+
+    def _supplement_text_field_with_tail_finder(
+        self,
+        current: ExtractedField,
+        candidates: list[TailFieldCandidate],
+        validator: Callable[..., FieldValidationResult],
+        finder_flag: str,
+        replace_margin: float = 0.08,
+    ) -> ExtractedField:
+        if not candidates:
+            return current
+
+        current_eval = validator(current.value, reason=current.reason, confidence=current.confidence)
+        validated_candidates: list[tuple[TailFieldCandidate, FieldValidationResult, float]] = []
+        for candidate in candidates:
+            validated = validator(candidate.value, reason=candidate.reason, confidence=candidate.confidence)
+            if not validated.accepted or validated.normalized_value is None:
+                continue
+            score = candidate.confidence + (validated.confidence if validated.confidence is not None else 0.0)
+            if validated.anchor_only:
+                score -= 0.10
+            validated_candidates.append((candidate, validated, score))
+
+        if not validated_candidates:
+            return current
+        best_candidate, best_validated, _ = sorted(validated_candidates, key=lambda item: (-item[2], item[0].reason))[0]
+
+        should_replace = False
+        if not current_eval.accepted or current.value is None:
+            should_replace = True
+        elif current_eval.anchor_only and not best_validated.anchor_only:
+            should_replace = True
+        elif current_eval.quality_flags and not best_validated.quality_flags:
+            should_replace = True
+        elif (current_eval.confidence or 0.0) + replace_margin < (best_validated.confidence or 0.0):
+            should_replace = True
+
+        if not should_replace:
+            return current
+
+        return ExtractedField(
+            field_name=current.field_name,
+            value=best_validated.normalized_value,
+            confidence=best_validated.confidence if best_validated.confidence is not None else best_candidate.confidence,
+            reason=f"{current.reason};finder:{best_candidate.reason}",
+            evidence_refs=unique_preserve_order_refs([best_candidate.evidence_ref] + current.evidence_refs),
+            flags=unique_preserve_order(list(current.flags) + [finder_flag, "finder_supplemented"]),
+        )
+
+    @staticmethod
+    def _replacement_margin(route: str, field_name: str) -> float:
+        bonus = route_field_bias(route, field_name)
+        return max(0.04, 0.08 - bonus)
 
     def _extract_contract_type(self, blocks: list[EvidenceBlock]) -> ExtractedField:
         pattern_rules: list[tuple[str, re.Pattern[str], float]] = [
@@ -365,7 +700,7 @@ class ContractFieldExtractor:
             return absolute
 
         anchor_pattern = re.compile(
-            r"(?P<anchor>(?:本契約締結日|契約締結日|締結日)\s*(?:から|より))"
+            r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
         )
         anchor_refs: list[EvidenceRef] = []
         anchor_value: str | None = None
@@ -375,7 +710,7 @@ class ContractFieldExtractor:
             if not match:
                 continue
             if anchor_value is None:
-                anchor_value = normalize_text(match.group("anchor"))
+                anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
             anchor_refs.append(self._to_ref(block))
 
         if anchor_refs and anchor_value is not None:
@@ -394,11 +729,11 @@ class ContractFieldExtractor:
         patterns = [
             re.compile(rf"(?:満了日|契約終了日|終了日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
             re.compile(rf"(?:有効期間|契約期間)[^。\n]{0,80}?(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*まで"),
-            re.compile(rf"(?:契約締結日|締結日)\s*から\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*まで"),
+            re.compile(rf"(?:契約締結日|契約締結の日|締結日)\s*から\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*まで"),
             re.compile(rf"(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*をもって\s*(?:終了|満了)"),
         ]
         relative_patterns = [
-            re.compile(r"(?:契約締結日|締結日)\s*から\s*[0-9０-９一二三四五六七八九十百]+(?:日|か月|ヶ月|ヵ月|年)間"),
+            re.compile(r"(?:契約締結日|契約締結の日|締結日)\s*から\s*[0-9０-９一二三四五六七八九十百]+(?:日|か月|ヶ月|ヵ月|年)間"),
             re.compile(r"有効期間[^。\n]{0,40}(?:1|１|一)年間"),
         ]
         return self._extract_date_field(

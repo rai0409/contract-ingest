@@ -247,6 +247,11 @@ class BlockMerger:
                 candidate_kind = str(candidate.get("candidate_kind", "body"))
                 if candidate_kind == "annotation":
                     block_type = BlockType.OTHER
+                elif candidate_kind == "table":
+                    block_type = BlockType.TABLE
+                elif candidate_kind == "appendix":
+                    if block_type in {BlockType.HEADER, BlockType.FOOTER, BlockType.SIGNATURE_AREA}:
+                        block_type = BlockType.TEXT
                 elif candidate_kind == "signature":
                     if block_type != BlockType.STAMP_AREA:
                         block_type = BlockType.SIGNATURE_AREA
@@ -263,6 +268,7 @@ class BlockMerger:
                     BlockType.SIGNATURE_AREA,
                     BlockType.STAMP_AREA,
                     BlockType.IMAGE,
+                    BlockType.TABLE,
                     BlockType.HEADER,
                     BlockType.FOOTER,
                 }:
@@ -380,18 +386,35 @@ class BlockMerger:
         normalized = normalize_text(text)
         if not normalized:
             return "annotation"
+        if block_type == BlockType.TABLE:
+            return "table"
         if block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
             return "signature"
         if block_type in {BlockType.HEADER, BlockType.FOOTER}:
             return "header_footer"
+        if LayoutAnalyzer._is_appendix_heading(normalized):
+            return "appendix"
+        if BlockMerger._is_appendix_like_text(normalized):
+            return "appendix"
         if is_article_heading_text(normalized):
             return "body"
         if is_annotation_like_text(normalized):
             return "annotation"
+        if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
+            return "annotation"
         if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
             return "signature"
-        if is_page_number_text(normalized):
+        if LayoutAnalyzer._looks_like_header_footer_block(
+            normalized,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+        ):
             return "header_footer"
+        if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
+            return "table"
+        if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+            return "annotation"
         if (
             len(normalized) <= 8
             and not LayoutAnalyzer._looks_like_sentence_text(normalized)
@@ -409,24 +432,6 @@ class BlockMerger:
             token in normalized for token in ["甲", "乙", "株式会社", "合同会社", "有限会社", "第", "条"]
         ):
             return "annotation"
-        if normalized in repeated_margin_texts and (
-            bbox.y1 <= page_height * 0.15 or bbox.y0 >= page_height * 0.85
-        ):
-            return "header_footer"
-        if (
-            bbox.y1 <= page_height * 0.06
-            and len(normalized) <= 24
-            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
-            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
-        ):
-            return "header_footer"
-        if (
-            bbox.y0 >= page_height * 0.96
-            and len(normalized) <= 24
-            and not LayoutAnalyzer._looks_like_sentence_text(normalized)
-            and not any(token in normalized for token in ["契約", "条", "甲", "乙"])
-        ):
-            return "header_footer"
         return "body"
 
     def _merge_adjacent_body_candidates(self, candidates: list[dict]) -> list[dict]:
@@ -438,7 +443,17 @@ class BlockMerger:
                 merged.append(candidate)
                 continue
             previous = merged[-1]
-            if not self._can_merge_body(previous, candidate):
+            prev_kind = previous.get("candidate_kind")
+            curr_kind = candidate.get("candidate_kind")
+            can_merge = False
+            merged_kind = "body"
+            if prev_kind == "body" and curr_kind == "body":
+                can_merge = self._can_merge_body(previous, candidate)
+                merged_kind = "body"
+            elif prev_kind == "appendix" and curr_kind == "appendix":
+                can_merge = self._can_merge_appendix(previous, candidate)
+                merged_kind = "appendix"
+            if not can_merge:
                 merged.append(candidate)
                 continue
             combined_source_ids = list(previous["source_block_ids"])
@@ -454,7 +469,7 @@ class BlockMerger:
                 "block_type": previous["block_type"],
                 "source_block_ids": combined_source_ids,
                 "adoption_reason": f"{previous['adoption_reason']}+body_compatible_merge",
-                "candidate_kind": "body",
+                "candidate_kind": merged_kind,
             }
         return merged
 
@@ -479,6 +494,8 @@ class BlockMerger:
         if is_page_number_text(prev_text) or is_page_number_text(curr_text):
             return False
         if is_article_heading_text(prev_text) or is_article_heading_text(curr_text):
+            return False
+        if BlockMerger._is_appendix_like_text(prev_text) or BlockMerger._is_appendix_like_text(curr_text):
             return False
         low_value_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
         if previous["extract_method"] == ExtractMethod.OCR and len(prev_text) <= 10:
@@ -513,6 +530,33 @@ class BlockMerger:
         if len(curr_text) <= 12 or len(prev_text) <= 12:
             max_gap = min(max_gap, 10.0)
         return -2.0 <= vertical_gap <= max_gap
+
+    @staticmethod
+    def _can_merge_appendix(previous: dict, current: dict) -> bool:
+        if previous.get("candidate_kind") != "appendix" or current.get("candidate_kind") != "appendix":
+            return False
+        if previous.get("block_type") not in {BlockType.TEXT, BlockType.TABLE}:
+            return False
+        if current.get("block_type") not in {BlockType.TEXT, BlockType.TABLE}:
+            return False
+        if previous["extract_method"] != current["extract_method"]:
+            return False
+        prev_text = normalize_text(previous["text"])
+        curr_text = normalize_text(current["text"])
+        if not prev_text or not curr_text:
+            return False
+        if is_annotation_like_text(prev_text) or is_annotation_like_text(curr_text):
+            return False
+        if is_page_number_text(prev_text) or is_page_number_text(curr_text):
+            return False
+        prev_bbox = previous["bbox"]
+        curr_bbox = current["bbox"]
+        overlap_x = max(0.0, min(prev_bbox.x1, curr_bbox.x1) - max(prev_bbox.x0, curr_bbox.x0))
+        min_width = min(prev_bbox.width, curr_bbox.width)
+        if min_width <= 0.0 or overlap_x / min_width < 0.55:
+            return False
+        vertical_gap = curr_bbox.y0 - prev_bbox.y1
+        return -2.0 <= vertical_gap <= max(24.0, min(prev_bbox.height, curr_bbox.height) * 2.0)
 
     @staticmethod
     def _union_bbox(lhs: BBox, rhs: BBox) -> BBox:
@@ -555,3 +599,13 @@ class BlockMerger:
             if not any(marker in normalized for marker in legal_markers):
                 return True
         return False
+
+    @staticmethod
+    def _is_appendix_like_text(text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        if LayoutAnalyzer._is_appendix_heading(normalized):
+            return True
+        appendix_markers = ("別紙", "別表", "別添", "付属資料", "仕様書")
+        return len(normalized) <= 24 and any(marker in normalized for marker in appendix_markers)
