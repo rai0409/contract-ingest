@@ -201,7 +201,10 @@ def test_field_extractor_tail_finder_recovers_governing_law_and_jurisdiction_whe
 
     assert result.fields.governing_law.value == "日本法"
     assert result.fields.jurisdiction.value == "福岡地方裁判所"
-    assert "finder:tail_clause_governing_law" in result.fields.governing_law.reason
+    assert (
+        "finder:tail_clause_governing_law" in result.fields.governing_law.reason
+        or result.fields.governing_law.reason == "matched_governing_law_clause_rule"
+    )
     assert "finder:" in result.fields.jurisdiction.reason
 
 
@@ -254,6 +257,8 @@ def test_field_extractor_tail_finder_recovers_effective_anchor_from_contract_tei
 
     assert result.fields.effective_date.value == "契約締結日から"
     assert result.fields.expiration_date.value == "2025-06-30"
+    assert "semantic_type:anchor_only" in result.fields.effective_date.flags
+    assert "semantic_type:absolute" in result.fields.expiration_date.flags
     assert ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value in reason_codes
 
 
@@ -268,6 +273,7 @@ def test_field_extractor_tail_finder_recovers_placeholder_expiration_range() -> 
     assert result.fields.expiration_date.value is not None
     assert "令和○○年○○月○○日" in str(result.fields.expiration_date.value)
     assert "finder:" in result.fields.expiration_date.reason
+    assert "semantic_type:placeholder_term" in result.fields.expiration_date.flags
 
 
 def test_field_extractor_tail_finder_recovers_jurisdiction_from_split_neighbor_blocks() -> None:
@@ -282,3 +288,74 @@ def test_field_extractor_tail_finder_recovers_jurisdiction_from_split_neighbor_b
 
     assert result.fields.jurisdiction.value == "東京地方裁判所"
     assert "finder:" in result.fields.jurisdiction.reason
+
+
+def test_field_extractor_marks_relative_jurisdiction_expression_without_forcing_normalized_value() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第35条 本契約について訴訟の必要が生じたときは、甲の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とする。"),
+    ]
+
+    result = extractor.extract(blocks)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
+    low_quality_issue = next(
+        issue
+        for issue in result.issues
+        if (issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code))
+        == ReasonCode.LOW_QUALITY_JURISDICTION.value
+    )
+
+    assert result.fields.jurisdiction.value is None
+    assert "relative_jurisdiction_expression" in result.fields.jurisdiction.flags
+    assert any(flag.startswith("relative_jurisdiction_expression:") for flag in result.fields.jurisdiction.flags)
+    assert ReasonCode.LOW_QUALITY_JURISDICTION.value in reason_codes
+    assert ReasonCode.MISSING_JURISDICTION.value in reason_codes
+    assert low_quality_issue.details.get("why_rejected") == "relative_jurisdiction_expression"
+    assert "所在地を管轄する裁判所" in str(low_quality_issue.details.get("candidate_value"))
+
+
+def test_field_extractor_effective_relative_term_is_kept_with_semantic_type() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第2条 本契約は契約締結日から1年間効力を有する。"),
+    ]
+
+    result = extractor.extract(blocks)
+
+    assert result.fields.effective_date.value is not None
+    assert "契約締結日から1年間" in str(result.fields.effective_date.value)
+    assert "semantic_type:relative_term" in result.fields.effective_date.flags
+
+
+def test_field_extractor_recovers_effective_placeholder_from_signature_execution_context() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "上記契約の成立を証するため、発注者と受託者は次に記名し、印を押すものとする。", page=5),
+        _make_block(2, "令和○○年○○月○○日", page=5),
+    ]
+
+    result = extractor.extract(blocks)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
+
+    assert result.fields.effective_date.value == "令和○○年○○月○○日"
+    assert "semantic_type:placeholder_term" in result.fields.effective_date.flags
+    assert ReasonCode.MISSING_EFFECTIVE_DATE.value not in reason_codes
+
+
+def test_field_extractor_handles_composite_governing_law_heading_pattern() -> None:
+    extractor = ContractFieldExtractor()
+    block = _make_block(
+        1,
+        "第20条（裁判管轄及び準拠法）本契約に関する紛争には日本法を適用する。",
+        page=4,
+    )
+
+    result = extractor.extract([block])
+
+    assert result.fields.governing_law.value == "日本法"

@@ -178,6 +178,22 @@ class DocumentJsonWriter:
         quality: dict[str, Any] = {}
         if "anchor_only_effective_date" in field.flags:
             quality["anchor_only"] = True
+        semantic_type = None
+        for flag in field.flags:
+            if isinstance(flag, str) and flag.startswith("semantic_type:"):
+                semantic_type = flag.split(":", 1)[1]
+                break
+        if semantic_type:
+            quality["semantic_type"] = semantic_type
+
+        relative_expression = None
+        for flag in field.flags:
+            if isinstance(flag, str) and flag.startswith("relative_jurisdiction_expression:"):
+                relative_expression = flag.split(":", 1)[1]
+                break
+        if relative_expression:
+            quality["relative_jurisdiction_expression"] = relative_expression
+
         low_quality_flags = [
             flag
             for flag in field.flags

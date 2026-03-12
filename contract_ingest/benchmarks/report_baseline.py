@@ -53,6 +53,9 @@ def _format_table(documents: list[dict[str, Any]], top_n: int) -> str:
         "review_total",
         "field_fill_rate",
         "field_quality_score",
+        "eff_type",
+        "exp_type",
+        "rel_jur",
         "document_pass_fail",
         "top_issues",
     ]
@@ -70,6 +73,9 @@ def _format_table(documents: list[dict[str, Any]], top_n: int) -> str:
                 str(doc.get("review_total", "")),
                 _format_ratio(doc.get("field_fill_rate")),
                 _format_ratio(doc.get("field_quality_score")),
+                str(doc.get("effective_date_semantic_type", "") or ""),
+                str(doc.get("expiration_date_semantic_type", "") or ""),
+                str(bool(doc.get("relative_jurisdiction_detected", False))),
                 str(doc.get("document_pass_fail", "")),
                 top_text,
             ]

@@ -124,3 +124,22 @@ def test_document_writer_field_dict_contains_optional_quality_info() -> None:
 
     assert "quality" in payload
     assert payload["quality"]["anchor_only"] is True
+
+
+def test_document_writer_field_dict_includes_semantic_type_and_relative_jurisdiction_expression() -> None:
+    field = _field(
+        "jurisdiction",
+        None,
+        flags=[
+            "low_quality_jurisdiction",
+            "semantic_type:relative_term",
+            "relative_jurisdiction_expression",
+            "relative_jurisdiction_expression:甲の所在地を管轄する裁判所",
+        ],
+    )
+    payload = DocumentJsonWriter._field_to_dict(field)
+
+    assert "quality" in payload
+    assert payload["quality"]["semantic_type"] == "relative_term"
+    assert payload["quality"]["relative_jurisdiction_expression"] == "甲の所在地を管轄する裁判所"
+    assert "low_quality_jurisdiction" in payload["quality"]["quality_flags"]

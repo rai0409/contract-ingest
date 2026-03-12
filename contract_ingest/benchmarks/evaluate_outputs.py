@@ -24,6 +24,7 @@ _FILL_FIELDS = [
     "governing_law",
     "jurisdiction",
 ]
+_KNOWN_SEMANTIC_TYPES = {"absolute", "anchor_only", "relative_term", "placeholder_term", "renewable_term"}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -114,6 +115,10 @@ def _evaluate_document(doc_dir: Path, warnings: list[str]) -> dict[str, Any]:
         "document_pass_fail": "fail",
         "degraded_mode": True,
         "top_issues": [],
+        "effective_date_semantic_type": None,
+        "expiration_date_semantic_type": None,
+        "relative_jurisdiction_detected": False,
+        "governing_law_filled": False,
     }
     for metric in _TRACKED_REASON_CODES.values():
         metrics[metric] = 0
@@ -148,10 +153,11 @@ def _evaluate_document(doc_dir: Path, warnings: list[str]) -> dict[str, Any]:
 
     metrics["top_issues"] = _top_issues(reason_counts)
 
-    fill_rate, quality_score, degraded = _evaluate_fields(document, reason_counts, warnings, doc_dir.name)
+    fill_rate, quality_score, degraded, field_meta = _evaluate_fields(document, reason_counts, warnings, doc_dir.name)
     metrics["field_fill_rate"] = fill_rate
     metrics["field_quality_score"] = quality_score
     metrics["degraded_mode"] = degraded
+    metrics.update(field_meta)
     metrics["document_pass_fail"] = _judge_pass_fail(metrics)
 
     return metrics
@@ -162,7 +168,13 @@ def _evaluate_fields(
     reason_counts: dict[str, int],
     warnings: list[str],
     doc_name: str,
-) -> tuple[float, float, bool]:
+) -> tuple[float, float, bool, dict[str, Any]]:
+    field_meta = {
+        "effective_date_semantic_type": None,
+        "expiration_date_semantic_type": None,
+        "relative_jurisdiction_detected": False,
+        "governing_law_filled": False,
+    }
     penalties = 0.0
     penalties += 0.18 * reason_counts.get("LOW_QUALITY_COUNTERPARTY", 0)
     penalties += 0.20 * reason_counts.get("LOW_QUALITY_JURISDICTION", 0)
@@ -171,12 +183,12 @@ def _evaluate_fields(
 
     if not isinstance(document, dict):
         # degraded mode: review only
-        return 0.0, max(0.0, min(1.0, 0.80 - penalties)), True
+        return 0.0, max(0.0, min(1.0, 0.80 - penalties)), True, field_meta
 
     fields = document.get("fields")
     if not isinstance(fields, dict):
         warnings.append(f"document fields unavailable: {doc_name}")
-        return 0.0, max(0.0, min(1.0, 0.75 - penalties)), True
+        return 0.0, max(0.0, min(1.0, 0.75 - penalties)), True, field_meta
 
     filled = 0
     quality_seen = False
@@ -184,17 +196,36 @@ def _evaluate_fields(
         field_obj = fields.get(field_name)
         if not isinstance(field_obj, dict):
             continue
-        if _is_filled_value(field_obj.get("value")):
+        field_filled = _is_filled_value(field_obj.get("value"))
+        if field_filled:
             filled += 1
+            if field_name == "governing_law":
+                field_meta["governing_law_filled"] = True
 
         quality = field_obj.get("quality")
         if isinstance(quality, dict):
             quality_seen = True
             if bool(quality.get("anchor_only")):
-                penalties += 0.10
+                penalties += 0.06
             quality_flags = quality.get("quality_flags")
             if isinstance(quality_flags, list):
                 penalties += 0.04 * len([flag for flag in quality_flags if isinstance(flag, str)])
+
+            semantic_type = _normalize_semantic_type(quality.get("semantic_type"))
+            if semantic_type is not None:
+                if field_name == "effective_date":
+                    field_meta["effective_date_semantic_type"] = semantic_type
+                if field_name == "expiration_date":
+                    field_meta["expiration_date_semantic_type"] = semantic_type
+                penalties += _semantic_penalty(field_name, semantic_type)
+
+            if field_name == "jurisdiction":
+                relative_expression = quality.get("relative_jurisdiction_expression")
+                if isinstance(relative_expression, str) and relative_expression.strip():
+                    field_meta["relative_jurisdiction_detected"] = True
+
+    if field_meta["relative_jurisdiction_detected"]:
+        penalties -= 0.12
 
     fill_rate = filled / float(len(_FILL_FIELDS))
     base_score = 1.0
@@ -202,7 +233,7 @@ def _evaluate_fields(
     if degraded_mode:
         base_score = min(base_score, 0.85)
     quality_score = max(0.0, min(1.0, base_score - penalties))
-    return fill_rate, quality_score, degraded_mode
+    return fill_rate, quality_score, degraded_mode, field_meta
 
 
 def _is_filled_value(value: Any) -> bool:
@@ -231,6 +262,10 @@ def _judge_pass_fail(metrics: dict[str, Any]) -> str:
         + int(metrics.get("low_quality_governing_law_count", 0))
         + int(metrics.get("anchor_only_effective_date_count", 0))
     )
+    if bool(metrics.get("relative_jurisdiction_detected")) and int(metrics.get("missing_jurisdiction_count", 0)) > 0:
+        missing_major = max(0, missing_major - 1)
+    if bool(metrics.get("relative_jurisdiction_detected")) and int(metrics.get("low_quality_jurisdiction_count", 0)) > 0:
+        low_quality_total = max(0, low_quality_total - 1)
     fill_rate = float(metrics.get("field_fill_rate", 0.0))
     quality_score = float(metrics.get("field_quality_score", 0.0))
 
@@ -253,12 +288,31 @@ def _aggregate_documents(documents: list[dict[str, Any]]) -> dict[str, Any]:
     review_required_count = sum(1 for doc in documents if bool(doc.get("review_required")))
     avg_fill = sum(float(doc.get("field_fill_rate", 0.0)) for doc in documents) / max(len(documents), 1)
     avg_quality = sum(float(doc.get("field_quality_score", 0.0)) for doc in documents) / max(len(documents), 1)
+    effective_type_counts: dict[str, int] = {}
+    expiration_type_counts: dict[str, int] = {}
+    relative_jurisdiction_detected_count = 0
+    governing_law_fill_count = 0
+    for doc in documents:
+        effective_type = _normalize_semantic_type(doc.get("effective_date_semantic_type"))
+        expiration_type = _normalize_semantic_type(doc.get("expiration_date_semantic_type"))
+        if effective_type:
+            effective_type_counts[effective_type] = effective_type_counts.get(effective_type, 0) + 1
+        if expiration_type:
+            expiration_type_counts[expiration_type] = expiration_type_counts.get(expiration_type, 0) + 1
+        if bool(doc.get("relative_jurisdiction_detected")):
+            relative_jurisdiction_detected_count += 1
+        if bool(doc.get("governing_law_filled")):
+            governing_law_fill_count += 1
     return {
         "pass_count": pass_count,
         "fail_count": fail_count,
         "review_required_count": review_required_count,
         "average_field_fill_rate": round(avg_fill, 4),
         "average_field_quality_score": round(avg_quality, 4),
+        "effective_date_type_counts": effective_type_counts,
+        "expiration_date_type_counts": expiration_type_counts,
+        "relative_jurisdiction_detected_count": relative_jurisdiction_detected_count,
+        "governing_law_fill_count": governing_law_fill_count,
     }
 
 
@@ -281,6 +335,10 @@ def _write_csv(path: Path, documents: list[dict[str, Any]]) -> None:
         "field_quality_score",
         "document_pass_fail",
         "degraded_mode",
+        "effective_date_semantic_type",
+        "expiration_date_semantic_type",
+        "relative_jurisdiction_detected",
+        "governing_law_filled",
         "top_issues",
     ]
     with path.open("w", encoding="utf-8", newline="") as fp:
@@ -303,6 +361,37 @@ def _read_json(path: Path, warnings: list[str], label: str) -> Any:
     except Exception as exc:
         warnings.append(f"{label} parse error: {path} ({exc})")
         return None
+
+
+def _normalize_semantic_type(raw: Any) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if value in _KNOWN_SEMANTIC_TYPES:
+        return value
+    return None
+
+
+def _semantic_penalty(field_name: str, semantic_type: str) -> float:
+    if field_name == "effective_date":
+        if semantic_type == "anchor_only":
+            return 0.06
+        if semantic_type == "relative_term":
+            return 0.04
+        if semantic_type == "placeholder_term":
+            return 0.05
+        if semantic_type == "renewable_term":
+            return 0.03
+        return 0.0
+    if field_name == "expiration_date":
+        if semantic_type == "relative_term":
+            return 0.05
+        if semantic_type == "placeholder_term":
+            return 0.04
+        if semantic_type == "renewable_term":
+            return 0.03
+        return 0.0
+    return 0.0
 
 
 def main() -> None:

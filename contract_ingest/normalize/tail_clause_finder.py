@@ -13,6 +13,14 @@ _ABSOLUTE_DATE_RE = re.compile(
     r"[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2}\s*[/.]\s*[0-9０-９]{1,2})"
 )
 _PLACEHOLDER_DATE_TOKEN_RE = re.compile(r"令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日")
+_GOVERNING_LAW_HEADING_KEYWORDS = (
+    "準拠法",
+    "適用法",
+    "準拠法等",
+    "管轄及び準拠法",
+    "裁判管轄及び準拠法",
+)
+_GOVERNING_LAW_HEADING_RE = re.compile("|".join(re.escape(token) for token in _GOVERNING_LAW_HEADING_KEYWORDS))
 
 
 @dataclass(frozen=True)
@@ -35,36 +43,68 @@ def find_tail_governing_law_candidates(
         _iter_tail_context_scopes(
             blocks,
             clauses,
-            trigger_tokens=("準拠法", "日本法", "日本国法", "適用法", "適用する", "よる"),
+            trigger_tokens=_GOVERNING_LAW_HEADING_KEYWORDS + (
+                "日本法",
+                "日本国法",
+                "適用する",
+                "よる",
+                "成立",
+                "効力",
+                "履行",
+                "解釈",
+                "紛争には",
+            ),
         ),
         _iter_global_heading_scopes(
             blocks,
-            trigger_tokens=("準拠法", "日本法", "日本国法", "適用法"),
+            trigger_tokens=_GOVERNING_LAW_HEADING_KEYWORDS + ("日本法", "日本国法"),
             require_clause_marker=True,
         ),
     )
+    scopes = _combine_scopes(
+        scopes,
+        _iter_global_heading_scopes(
+            blocks,
+            trigger_tokens=_GOVERNING_LAW_HEADING_KEYWORDS,
+            require_clause_marker=False,
+            max_scopes=8,
+        ),
+    )
+    scopes = _combine_scopes(scopes, find_governing_law_clause_spans(blocks, clauses))
     for text, ref in scopes:
         compact = _compact(text)
         if "準拠法" not in compact and "日本法" not in compact and "日本国法" not in compact:
             continue
         law: str | None = None
-        if re.search(r"(日本法|日本国法)[^。]{0,24}(?:に準拠|を適用|による)", compact):
+        if re.search(
+            r"本契約[^。]{0,96}(?:成立|効力|履行|解釈)[^。]{0,96}(日本法|日本国法)[^。]{0,40}(?:による|に準拠|を適用)",
+            compact,
+        ):
             law = "日本法"
-        elif "準拠法" in compact and ("日本法" in compact or "日本国法" in compact):
+        elif re.search(
+            r"本契約[^。]{0,96}(?:成立及び効力|成立および効力)[^。]{0,96}(日本法|日本国法)[^。]{0,40}(?:による|に準拠|を適用)",
+            compact,
+        ):
             law = "日本法"
-        elif "適用法" in compact and ("日本法" in compact or "日本国法" in compact):
+        elif re.search(r"本契約に関する紛争には[^。]{0,40}(日本法|日本国法)[^。]{0,20}を適用", compact):
+            law = "日本法"
+        elif re.search(r"(日本法|日本国法)[^。]{0,32}(?:に準拠|を適用|による)", compact):
+            law = "日本法"
+        elif re.search(r"(?:準拠法|適用法|準拠法等)[^。]{0,40}(?:は|を|:|：)?(?:日本法|日本国法)", compact):
+            law = "日本法"
+        elif re.search(r"(?:日本法|日本国法)を準拠法とする", compact):
             law = "日本法"
         else:
             match = re.search(r"準拠法[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)", compact)
             if not match:
                 match = re.search(r"適用法[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)", compact)
             if match:
-                law = normalize_text(match.group(1))
+                law = normalize_governing_law_text(match.group(1))
         if law is None:
             continue
         if law in {"法", "準拠法", "契約"}:
             continue
-        confidence = 0.82 + _route_bonus(route, "governing_law")
+        confidence = score_governing_law_candidate(compact, route=route)
         candidates.append(
             TailFieldCandidate(
                 value=law,
@@ -215,7 +255,7 @@ def find_tail_expiration_candidates(
             continue
 
         renewable = re.search(
-            r"(?:有効期間|契約期間|委託期間|履行期間)[^。]{0,80}(?:到来する日まで|更新|延長|短縮)",
+            r"(?:有効期間|契約期間|委託期間|履行期間|満了|終了)[^。]{0,100}(?:到来する日まで|更新|延長|短縮|自動更新|同一条件)",
             compact,
         )
         if renewable:
@@ -270,6 +310,22 @@ def find_tail_effective_date_candidates(
             )
             continue
 
+        relative_effective = re.search(
+            r"(?:本契約|効力|発効)[^。]{0,40}(?:契約締結日|契約締結の日|締結日)[^。]{0,24}(?:から|より)[^。]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間",
+            compact,
+        )
+        if relative_effective:
+            candidates.append(
+                TailFieldCandidate(
+                    value=normalize_text(relative_effective.group(0)).replace("契約締結の日", "契約締結日"),
+                    confidence=0.64 + _route_bonus(route, "effective_date"),
+                    reason="tail_clause_effective_relative",
+                    evidence_ref=ref,
+                    snippet=text[:160],
+                )
+            )
+            continue
+
         anchor = re.search(r"((?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))", compact)
         if anchor:
             normalized_anchor = normalize_text(anchor.group(1)).replace("契約締結の日", "契約締結日")
@@ -282,7 +338,76 @@ def find_tail_effective_date_candidates(
                     snippet=text[:160],
                 )
             )
+            continue
+
+        placeholder_effective = re.search(
+            r"(令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)[^。]{0,24}(?:より|から)[^。]{0,16}(?:効力|発効)",
+            compact,
+        )
+        if placeholder_effective:
+            candidates.append(
+                TailFieldCandidate(
+                    value=normalize_text(placeholder_effective.group(1)),
+                    confidence=0.60 + _route_bonus(route, "effective_date"),
+                    reason="tail_clause_effective_placeholder",
+                    evidence_ref=ref,
+                    snippet=text[:160],
+                )
+            )
     return _dedupe_candidates(candidates)
+
+
+def find_governing_law_clause_spans(
+    blocks: list[EvidenceBlock],
+    clauses: list[ClauseUnit] | None,
+) -> list[tuple[str, EvidenceRef]]:
+    scopes: list[tuple[str, EvidenceRef]] = []
+    if clauses:
+        for clause in clauses:
+            if not clause.evidence_refs:
+                continue
+            title = normalize_text(f"{clause.clause_no or ''} {clause.clause_title or ''}")
+            body = normalize_text(clause.text)
+            compact_body = _compact(body)
+            if _GOVERNING_LAW_HEADING_RE.search(_compact(title)) or "日本法" in compact_body or "日本国法" in compact_body:
+                scopes.append((body, clause.evidence_refs[0]))
+
+    ordered = sorted(blocks, key=lambda b: (b.page, b.bbox.y0, b.bbox.x0))
+    for idx, block in enumerate(ordered):
+        compact = _compact(block.text)
+        if not _GOVERNING_LAW_HEADING_RE.search(compact):
+            continue
+        span_blocks = [block]
+        if idx > 0 and _is_neighbor_merge_candidate(anchor=block, neighbor=ordered[idx - 1]):
+            span_blocks.append(ordered[idx - 1])
+        if idx + 1 < len(ordered) and _is_neighbor_merge_candidate(anchor=block, neighbor=ordered[idx + 1]):
+            span_blocks.append(ordered[idx + 1])
+        if idx + 2 < len(ordered) and _is_neighbor_merge_candidate(anchor=block, neighbor=ordered[idx + 2]):
+            span_blocks.append(ordered[idx + 2])
+        merged_text = normalize_text(" ".join(item.text for item in sorted(span_blocks, key=lambda b: (b.page, b.bbox.y0, b.bbox.x0))))
+        if merged_text:
+            scopes.append((merged_text, _to_ref(block)))
+    return scopes
+
+
+def score_governing_law_candidate(text: str, *, route: str) -> float:
+    score = 0.80 + _route_bonus(route, "governing_law")
+    if "準拠法" in text or "適用法" in text:
+        score += 0.04
+    if "日本法" in text or "日本国法" in text:
+        score += 0.03
+    if "成立" in text and "効力" in text and "解釈" in text:
+        score += 0.03
+    return min(0.96, score)
+
+
+def normalize_governing_law_text(raw_text: str) -> str | None:
+    normalized = normalize_text(raw_text)
+    if "日本法" in normalized or "日本国法" in normalized:
+        return "日本法"
+    if normalized in {"法", "準拠法", "適用法"}:
+        return None
+    return normalized
 
 
 def _iter_tail_scopes(blocks: list[EvidenceBlock], clauses: list[ClauseUnit] | None) -> list[tuple[str, EvidenceRef]]:
