@@ -3,6 +3,7 @@ from __future__ import annotations
 from contract_ingest.normalize.field_validators import (
     validate_counterparties,
     validate_effective_date,
+    validate_expiration_date,
     validate_governing_law,
     validate_jurisdiction,
 )
@@ -33,6 +34,22 @@ def test_validate_effective_date_marks_anchor_only_value() -> None:
     assert result.accepted is True
     assert result.anchor_only is True
     assert "anchor_only_effective_date" in result.quality_flags
+    assert "semantic_type:anchor_only" in result.quality_flags
+
+
+def test_validate_date_semantic_types_cover_absolute_relative_placeholder_and_renewable() -> None:
+    assert "semantic_type:absolute" in validate_effective_date("2025-04-01").quality_flags
+    assert "semantic_type:relative_term" in validate_effective_date("本契約締結日から1年間").quality_flags
+    assert "semantic_type:placeholder_term" in validate_expiration_date("令和○○年○○月○○日まで").quality_flags
+    assert "semantic_type:renewable_term" in validate_expiration_date("1年ごとに自動更新するものとする").quality_flags
+
+
+def test_validate_jurisdiction_marks_relative_expression_as_low_quality() -> None:
+    result = validate_jurisdiction("甲の所在地を管轄する裁判所")
+
+    assert result.accepted is False
+    assert result.reason == "relative_jurisdiction_expression"
+    assert "relative_jurisdiction_expression" in result.quality_flags
 
 
 def test_validate_counterparties_rejects_fragment_like_values() -> None:

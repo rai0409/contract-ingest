@@ -114,6 +114,7 @@ class ContractFieldExtractor:
             finder_flag="tail_effective_finder",
             replace_margin=self._replacement_margin(route, "effective_date"),
         )
+        relative_jurisdiction = self._detect_relative_jurisdiction_expression(ordered_blocks, clauses=clauses)
 
         counterparties, counterparties_issues = self._apply_field_validation_gate(
             field=counterparties,
@@ -154,6 +155,11 @@ class ContractFieldExtractor:
             accepted_warning_reason=ReasonCode.LOW_QUALITY_JURISDICTION,
             rejection_message="jurisdiction candidate was rejected by quality gate",
             accepted_warning_message="jurisdiction candidate has low quality signal",
+        )
+        jurisdiction, jurisdiction_issues = self._attach_relative_jurisdiction_expression(
+            field=jurisdiction,
+            issues=jurisdiction_issues,
+            relative_expression=relative_jurisdiction,
         )
         issues.extend(counterparties_issues)
         issues.extend(effective_date_issues)
@@ -292,20 +298,145 @@ class ContractFieldExtractor:
                     result=result,
                 )
             )
-        elif accepted_warning_reason is not None and (
-            any(flag.endswith("partial_accept") for flag in merged_flags)
-            or "relative_period_only" in merged_flags
-        ):
-            issues.append(
-                self._build_validation_issue(
-                    field=accepted_field,
-                    reason_code=accepted_warning_reason,
-                    message=accepted_warning_message,
-                    result=result,
+        elif accepted_warning_reason is not None:
+            should_emit_warning = any(flag.endswith("partial_accept") for flag in merged_flags)
+            if accepted_field.field_name == "expiration_date":
+                should_emit_warning = should_emit_warning or any(
+                    flag in merged_flags for flag in ["relative_period_only", "placeholder_date", "renewable_term"]
                 )
-            )
+            if should_emit_warning:
+                issues.append(
+                    self._build_validation_issue(
+                        field=accepted_field,
+                        reason_code=accepted_warning_reason,
+                        message=accepted_warning_message,
+                        result=result,
+                    )
+                )
 
         return accepted_field, issues
+
+    @staticmethod
+    def _looks_like_signature_execution_context(text: str) -> bool:
+        compact = normalize_text(text)
+        return any(
+            marker in compact
+            for marker in [
+                "契約の成立を証するため",
+                "契約締結を証するため",
+                "契約締結の証として",
+                "本契約の成立を証するため",
+            ]
+        )
+
+    @staticmethod
+    def _extract_placeholder_date_token(text: str) -> str | None:
+        match = re.search(r"(令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)", normalize_text(text))
+        if not match:
+            return None
+        return normalize_text(match.group(1))
+
+    @staticmethod
+    def _signature_execution_date_candidate(blocks: list[EvidenceBlock]) -> tuple[str, list[EvidenceRef]] | None:
+        ordered = sorted(blocks, key=lambda b: (b.page, b.reading_order, b.bbox.y0, b.bbox.x0))
+        for idx, block in enumerate(ordered):
+            text = normalize_text(block.text)
+            if not ContractFieldExtractor._looks_like_signature_execution_context(text):
+                continue
+            current_date = ContractFieldExtractor._extract_placeholder_date_token(text)
+            refs = [ContractFieldExtractor._to_ref(block)]
+            if current_date is not None:
+                return current_date, refs
+            for offset in range(1, 9):
+                candidate_idx = idx + offset
+                if candidate_idx >= len(ordered):
+                    break
+                neighbor = ordered[candidate_idx]
+                if neighbor.page != block.page:
+                    break
+                candidate_date = ContractFieldExtractor._extract_placeholder_date_token(neighbor.text)
+                if candidate_date is None:
+                    continue
+                refs.append(ContractFieldExtractor._to_ref(neighbor))
+                return candidate_date, refs
+        return None
+
+    @staticmethod
+    def _make_effective_signature_date_field(candidate: str, refs: list[EvidenceRef]) -> ExtractedField:
+        return ExtractedField(
+            field_name="effective_date",
+            value=candidate,
+            confidence=0.60,
+            reason="matched_effective_date_signature_execution_rule",
+            evidence_refs=unique_preserve_order_refs(refs),
+            flags=["signature_execution_date"],
+        )
+
+    def _extract_effective_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
+        patterns = [
+            re.compile(rf"(?:効力発生日|発効日|契約締結日|契約日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
+            re.compile(rf"(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*(?:より|から)\s*(?:効力|発効|開始)"),
+            re.compile(rf"本契約[^。\n]{0,30}?(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})[^。\n]{0,10}?(?:締結|効力)"),
+        ]
+        absolute = self._extract_date_field(
+            field_name="effective_date",
+            blocks=blocks,
+            patterns=patterns,
+            reason="matched_effective_date_rule",
+            missing_reason="rule_no_match_effective_date",
+            allow_fallback_absolute=False,
+        )
+        if absolute.value is not None:
+            return absolute
+
+        relative_pattern = re.compile(
+            r"(?P<expr>(?:本契約|効力|発効)[^。\n]{0,40}(?:契約締結日|契約締結の日|締結日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間)"
+        )
+
+        for block in blocks:
+            text = normalize_text(block.text)
+            match = relative_pattern.search(text)
+            if not match:
+                continue
+            return ExtractedField(
+                field_name="effective_date",
+                value=normalize_text(match.group("expr")).replace("契約締結の日", "契約締結日"),
+                confidence=0.66,
+                reason="matched_relative_effective_period_rule",
+                evidence_refs=[self._to_ref(block)],
+                flags=["relative_period_only"],
+            )
+
+        anchor_pattern = re.compile(
+            r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
+        )
+        anchor_refs: list[EvidenceRef] = []
+        anchor_value: str | None = None
+        for block in blocks:
+            text = normalize_text(block.text)
+            match = anchor_pattern.search(text)
+            if not match:
+                continue
+            if anchor_value is None:
+                anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
+            anchor_refs.append(self._to_ref(block))
+
+        if anchor_refs and anchor_value is not None:
+            return ExtractedField(
+                field_name="effective_date",
+                value=anchor_value,
+                confidence=0.72,
+                reason="matched_effective_date_anchor_rule",
+                evidence_refs=unique_preserve_order_refs(anchor_refs),
+                flags=["execution_date_anchor_detected"],
+            )
+
+        signature_candidate = self._signature_execution_date_candidate(blocks)
+        if signature_candidate is not None:
+            candidate_value, refs = signature_candidate
+            return self._make_effective_signature_date_field(candidate_value, refs)
+
+        return absolute
 
     @staticmethod
     def _build_validation_issue(
@@ -328,6 +459,11 @@ class ContractFieldExtractor:
                 "confidence": field.confidence,
                 "quality_flags": list(result.quality_flags),
                 "anchor_only": result.anchor_only,
+                "semantic_type": ContractFieldExtractor._extract_semantic_type(result.quality_flags),
+                "relative_jurisdiction_expression": ContractFieldExtractor._extract_relative_jurisdiction_expression(
+                    result.raw_value,
+                    result.quality_flags,
+                ),
                 "bbox": first_ref.bbox.to_dict() if first_ref is not None else None,
                 "snippet": normalize_text(str(result.raw_value))[:120] if result.raw_value is not None else None,
             },
@@ -448,6 +584,27 @@ class ContractFieldExtractor:
     def _replacement_margin(route: str, field_name: str) -> float:
         bonus = route_field_bias(route, field_name)
         return max(0.04, 0.08 - bonus)
+
+    @staticmethod
+    def _extract_semantic_type(flags: list[str]) -> str | None:
+        for flag in flags:
+            if flag.startswith("semantic_type:"):
+                semantic = normalize_text(flag.split(":", 1)[1])
+                return semantic or None
+        return None
+
+    @staticmethod
+    def _extract_relative_jurisdiction_expression(
+        raw_value: str | bool | list[str] | None,
+        flags: list[str],
+    ) -> str | None:
+        if "relative_jurisdiction_expression" not in flags:
+            return None
+        if isinstance(raw_value, str):
+            candidate = normalize_text(raw_value)
+            if "管轄する裁判所" in candidate:
+                return candidate
+        return None
 
     def _extract_contract_type(self, blocks: list[EvidenceBlock]) -> ExtractedField:
         pattern_rules: list[tuple[str, re.Pattern[str], float]] = [
@@ -682,49 +839,6 @@ class ContractFieldExtractor:
         reject_markers = ("締結", "契約", "以下", "第", "条")
         return not any(marker in name for marker in reject_markers)
 
-    def _extract_effective_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
-        patterns = [
-            re.compile(rf"(?:効力発生日|発効日|契約締結日|契約日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
-            re.compile(rf"(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*(?:より|から)\s*(?:効力|発効|開始)"),
-            re.compile(rf"本契約[^。\n]{0,30}?(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})[^。\n]{0,10}?(?:締結|効力)"),
-        ]
-        absolute = self._extract_date_field(
-            field_name="effective_date",
-            blocks=blocks,
-            patterns=patterns,
-            reason="matched_effective_date_rule",
-            missing_reason="rule_no_match_effective_date",
-            allow_fallback_absolute=False,
-        )
-        if absolute.value is not None:
-            return absolute
-
-        anchor_pattern = re.compile(
-            r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
-        )
-        anchor_refs: list[EvidenceRef] = []
-        anchor_value: str | None = None
-        for block in blocks:
-            text = normalize_text(block.text)
-            match = anchor_pattern.search(text)
-            if not match:
-                continue
-            if anchor_value is None:
-                anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
-            anchor_refs.append(self._to_ref(block))
-
-        if anchor_refs and anchor_value is not None:
-            return ExtractedField(
-                field_name="effective_date",
-                value=anchor_value,
-                confidence=0.72,
-                reason="matched_effective_date_anchor_rule",
-                evidence_refs=unique_preserve_order_refs(anchor_refs),
-                flags=["execution_date_anchor_detected"],
-            )
-
-        return absolute
-
     def _extract_expiration_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
         patterns = [
             re.compile(rf"(?:満了日|契約終了日|終了日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
@@ -735,6 +849,7 @@ class ContractFieldExtractor:
         relative_patterns = [
             re.compile(r"(?:契約締結日|契約締結の日|締結日)\s*から\s*[0-9０-９一二三四五六七八九十百]+(?:日|か月|ヶ月|ヵ月|年)間"),
             re.compile(r"有効期間[^。\n]{0,40}(?:1|１|一)年間"),
+            re.compile(r"(?:有効期間|契約期間)[^。\n]{0,80}(?:自動更新|同一条件で更新|更新するものとする|更新される)"),
         ]
         return self._extract_date_field(
             field_name="expiration_date",
@@ -815,12 +930,35 @@ class ContractFieldExtractor:
         clauses: list[ClauseUnit] | None = None,
     ) -> ExtractedField:
         patterns = [
-            re.compile(r"本契約[^。\n]{0,40}?(?P<law>日本法)[^。\n]{0,20}?(?:準拠|よる|従う)", re.IGNORECASE),
-            re.compile(r"(?P<law>日本法)[^。\n]{0,15}?に準拠", re.IGNORECASE),
-            re.compile(r"準拠法[^。\n]{0,30}?(?P<law>日本法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
+            re.compile(r"本契約[^。\n]{0,96}?(?P<law>日本法|日本国法)[^。\n]{0,40}?(?:準拠|よる|従う|適用)", re.IGNORECASE),
+            re.compile(
+                r"本契約[^。\n]{0,120}?(?:成立|効力|履行|解釈)[^。\n]{0,120}?(?P<law>日本法|日本国法)[^。\n]{0,30}?(?:による|に準拠|を適用)",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"本契約[^。\n]{0,120}?(?:成立及び効力|成立および効力)[^。\n]{0,120}?(?P<law>日本法|日本国法)[^。\n]{0,30}?(?:による|に準拠|を適用)",
+                re.IGNORECASE,
+            ),
+            re.compile(r"(?P<law>日本法|日本国法)[^。\n]{0,20}?(?:に準拠|を適用|による)", re.IGNORECASE),
+            re.compile(r"本契約に関する紛争には[^。\n]{0,30}?(?P<law>日本法|日本国法)[^。\n]{0,20}?を適用", re.IGNORECASE),
+            re.compile(r"準拠法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
+            re.compile(r"適用法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
         ]
 
-        clause_keywords = ("準拠法", "管轄", "合意管轄", "管轄裁判所", "一般条項", "雑則", "その他", "附則")
+        clause_keywords = (
+            "準拠法",
+            "適用法",
+            "管轄及び準拠法",
+            "裁判管轄及び準拠法",
+            "準拠法等",
+            "管轄",
+            "合意管轄",
+            "管轄裁判所",
+            "一般条項",
+            "雑則",
+            "その他",
+            "附則",
+        )
         for scope_text, scope_ref, clause_related in self._iter_field_scopes(
             blocks=blocks,
             clauses=clauses,
@@ -852,7 +990,17 @@ class ContractFieldExtractor:
                             evidence_refs=[scope_ref],
                         )
 
-                if "準拠法" in sentence_compact and "日本法" in sentence_compact:
+                if (
+                    (
+                        "準拠法" in sentence_compact
+                        or "適用法" in sentence_compact
+                        or "管轄及び準拠法" in sentence_compact
+                        or "裁判管轄及び準拠法" in sentence_compact
+                        or "成立効力履行および解釈" in sentence_compact
+                        or "成立及び効力" in sentence_compact
+                    )
+                    and ("日本法" in sentence_compact or "日本国法" in sentence_compact)
+                ):
                     confidence = 0.92 if clause_related else 0.87
                     return ExtractedField(
                         field_name="governing_law",
@@ -915,10 +1063,13 @@ class ContractFieldExtractor:
                 if "合意管轄" in sentence_compact and "裁判所" in sentence_compact:
                     fallback_court = re.search(r"([^\s、。\n]{2,40}裁判所)", sentence_compact)
                     if fallback_court:
+                        candidate = self._normalize_court_name(fallback_court.group(1))
+                        if candidate in {"裁判所", "地方裁判所", "簡易裁判所", "家庭裁判所", "高等裁判所"}:
+                            continue
                         confidence = 0.90 if clause_related else 0.84
                         return ExtractedField(
                             field_name="jurisdiction",
-                            value=self._normalize_court_name(fallback_court.group(1)),
+                            value=candidate,
                             confidence=confidence,
                             reason="matched_jurisdiction_clause_rule",
                             evidence_refs=[scope_ref],
@@ -957,6 +1108,88 @@ class ContractFieldExtractor:
         for block in blocks:
             scopes.append((block.text, self._to_ref(block), False))
         return scopes
+
+    def _detect_relative_jurisdiction_expression(
+        self,
+        blocks: list[EvidenceBlock],
+        clauses: list[ClauseUnit] | None,
+    ) -> tuple[str, EvidenceRef] | None:
+        pattern = re.compile(
+            r"(?P<expr>(?:(?:甲|乙|被告|原告|相手方|当事者)\s*の\s*)?(?:所在地|住所|本店所在地|本店)\s*を\s*管轄する裁判所)"
+        )
+        clause_keywords = ("管轄", "合意管轄", "管轄裁判所", "裁判所", "紛争", "雑則", "附則")
+        for scope_text, scope_ref, _ in self._iter_field_scopes(blocks=blocks, clauses=clauses, clause_keywords=clause_keywords):
+            compact = normalize_text(scope_text)
+            match = pattern.search(compact)
+            if not match:
+                continue
+            expr = normalize_text(match.group("expr"))
+            if expr and "管轄する裁判所" in expr:
+                return expr, scope_ref
+        return None
+
+    def _attach_relative_jurisdiction_expression(
+        self,
+        field: ExtractedField,
+        issues: list[ProcessingIssue],
+        relative_expression: tuple[str, EvidenceRef] | None,
+    ) -> tuple[ExtractedField, list[ProcessingIssue]]:
+        if relative_expression is None:
+            return field, issues
+
+        expression, ref = relative_expression
+        expression_flag = f"relative_jurisdiction_expression:{expression}"
+        updated_field = ExtractedField(
+            field_name=field.field_name,
+            value=field.value,
+            confidence=field.confidence,
+            reason=field.reason,
+            evidence_refs=field.evidence_refs,
+            flags=unique_preserve_order(list(field.flags) + ["relative_jurisdiction_expression", expression_flag]),
+        )
+
+        updated_issues = list(issues)
+        replaced = False
+        for idx, issue in enumerate(updated_issues):
+            issue_reason = issue.reason_code.value if isinstance(issue.reason_code, ReasonCode) else str(issue.reason_code)
+            if issue_reason != ReasonCode.LOW_QUALITY_JURISDICTION.value:
+                continue
+            details = dict(issue.details)
+            details["candidate_value"] = expression
+            details["why_rejected"] = "relative_jurisdiction_expression"
+            details["snippet"] = expression
+            details["relative_jurisdiction_expression"] = expression
+            details["bbox"] = ref.bbox.to_dict()
+            updated_issues[idx] = ProcessingIssue(
+                severity=issue.severity,
+                reason_code=issue.reason_code,
+                message=issue.message,
+                page=ref.page,
+                block_id=ref.block_id,
+                details=details,
+            )
+            replaced = True
+            break
+
+        if not replaced and updated_field.value is None:
+            updated_issues.append(
+                ProcessingIssue(
+                    severity=ErrorSeverity.REVIEW,
+                    reason_code=ReasonCode.LOW_QUALITY_JURISDICTION,
+                    message="relative jurisdiction expression detected but normalized court name is unresolved",
+                    page=ref.page,
+                    block_id=ref.block_id,
+                    details={
+                        "field_name": "jurisdiction",
+                        "candidate_value": expression,
+                        "why_rejected": "relative_jurisdiction_expression",
+                        "snippet": expression,
+                        "bbox": ref.bbox.to_dict(),
+                        "relative_jurisdiction_expression": expression,
+                    },
+                )
+            )
+        return updated_field, updated_issues
 
     @staticmethod
     def _clause_priority(clause: ClauseUnit, keywords: tuple[str, ...]) -> float:

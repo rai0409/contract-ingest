@@ -46,4 +46,5 @@ def test_route_field_bias_changes_tail_priority_lightly_and_unknown_is_safe() ->
     assert route_field_bias(ROUTE_NDA, "governing_law") > 0.0
     assert route_field_bias(ROUTE_SERVICE, "effective_date") > 0.0
     assert route_field_bias(ROUTE_LICENSE_OR_ITAKU, "jurisdiction") > 0.0
+    assert route_field_bias(ROUTE_LICENSE_OR_ITAKU, "governing_law") > 0.0
     assert route_field_bias(ROUTE_UNKNOWN, "jurisdiction") == 0.0

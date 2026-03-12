@@ -113,3 +113,39 @@ def test_tail_clause_finder_captures_governing_law_and_placeholder_term_spans() 
     assert any(candidate.value == "日本法" for candidate in law_candidates)
     assert any("令和○○年○○月○○日から令和○○年○○月○○日まで" in candidate.value for candidate in expiration_candidates)
     assert any(candidate.value == "契約締結日から" for candidate in effective_candidates)
+
+
+def test_tail_clause_finder_supports_governing_law_variants() -> None:
+    blocks = [
+        _make_block(4, 10, "第18条（準拠法等）本契約の成立、効力、履行および解釈は日本法による。"),
+        _make_block(4, 11, "第19条（適用法）本契約に関しては日本法を適用する。"),
+    ]
+
+    candidates = find_tail_governing_law_candidates(blocks, route="NDA")
+
+    assert any(candidate.value == "日本法" for candidate in candidates)
+    assert all(candidate.value not in {"法", "準拠"} for candidate in candidates)
+
+
+def test_tail_clause_finder_captures_relative_and_renewable_date_terms() -> None:
+    blocks = [
+        _make_block(3, 20, "第9条 本契約は契約締結日から1年間効力を有する。"),
+        _make_block(3, 21, "第10条 契約期間は1年ごとに自動更新するものとする。"),
+    ]
+
+    effective_candidates = find_tail_effective_date_candidates(blocks, route="SERVICE")
+    expiration_candidates = find_tail_expiration_candidates(blocks, route="SERVICE")
+
+    assert any("契約締結日から1年間" in candidate.value for candidate in effective_candidates)
+    assert any("自動更新" in candidate.value for candidate in expiration_candidates)
+
+
+def test_tail_clause_finder_supports_composite_heading_for_governing_law() -> None:
+    blocks = [
+        _make_block(5, 40, "（裁判管轄及び準拠法）"),
+        _make_block(5, 41, "本契約に関する紛争には日本法を適用する。"),
+    ]
+
+    candidates = find_tail_governing_law_candidates(blocks, route="LICENSE_OR_ITAKU")
+
+    assert any(candidate.value == "日本法" for candidate in candidates)

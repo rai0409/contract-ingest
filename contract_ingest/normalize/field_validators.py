@@ -5,6 +5,20 @@ import re
 
 from contract_ingest.utils.text import normalize_digits, normalize_text, unique_preserve_order
 
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE_TOKEN_RE = re.compile(r"(?:令和\s*[0-9０-９元○◯]+年|[0-9０-９]{4}\s*年|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2})")
+_PLACEHOLDER_TERM_RE = re.compile(r"(?:令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日|○○年|○○月|○○日)")
+_RELATIVE_EFFECTIVE_TERM_RE = re.compile(
+    r"(?:本契約締結日|契約締結日|契約締結の日|締結日|発効日|効力発生日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間"
+)
+_RELATIVE_EXPIRATION_TERM_RE = re.compile(
+    r"(?:契約締結日|契約締結の日|締結日|発効日|効力発生日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間"
+)
+_RENEWABLE_TERM_RE = re.compile(r"(?:自動更新|同一条件で更新|更新するものとする|更新される|更新拒絶)")
+_RELATIVE_JURISDICTION_RE = re.compile(
+    r"(?:(?:甲|乙|被告|原告|相手方|当事者)\s*の\s*)?(?:所在地|住所|本店所在地|本店所在地等|本店)\s*を\s*管轄する裁判所"
+)
+
 
 @dataclass(frozen=True)
 class FieldValidationResult:
@@ -72,6 +86,16 @@ def validate_jurisdiction(
             confidence=None,
             raw_value=value,
             quality_flags=["low_quality_jurisdiction", "fragment_like"],
+        )
+
+    if _RELATIVE_JURISDICTION_RE.search(text):
+        return FieldValidationResult(
+            accepted=False,
+            normalized_value=None,
+            reason="relative_jurisdiction_expression",
+            confidence=None,
+            raw_value=value,
+            quality_flags=["low_quality_jurisdiction", "relative_jurisdiction_expression"],
         )
 
     court_match = re.search(r"([^\s、。]{1,18}(?:地方|簡易|家庭|高等)?裁判所)", text)
@@ -228,7 +252,9 @@ def validate_effective_date(
             quality_flags=["low_quality_effective_date"],
         )
 
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalize_digits(text)):
+    semantic_type = classify_effective_date_semantics(text)
+
+    if semantic_type == "absolute" and _ISO_DATE_RE.fullmatch(normalize_digits(text)):
         base = confidence if confidence is not None else 0.92
         return FieldValidationResult(
             accepted=True,
@@ -236,11 +262,11 @@ def validate_effective_date(
             reason="validated_effective_date_absolute",
             confidence=max(0.0, min(0.99, base)),
             raw_value=value,
-            quality_flags=["absolute_date"],
+            quality_flags=["absolute_date", _semantic_flag("absolute")],
             anchor_only=False,
         )
 
-    if re.search(r"(?:本契約締結日|契約締結日|締結日)\s*(?:から|より)$", text):
+    if semantic_type == "anchor_only":
         base = confidence if confidence is not None else 0.72
         return FieldValidationResult(
             accepted=True,
@@ -248,11 +274,44 @@ def validate_effective_date(
             reason="validated_effective_date_anchor_only",
             confidence=min(0.72, max(0.0, base)),
             raw_value=value,
-            quality_flags=["anchor_only_effective_date"],
+            quality_flags=["anchor_only_effective_date", _semantic_flag("anchor_only")],
             anchor_only=True,
         )
 
-    if re.search(r"(?:令和\s*[0-9０-９元]+年|[0-9０-９]{4}\s*年|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2})", text):
+    if semantic_type == "relative_term":
+        base = confidence if confidence is not None else 0.66
+        return FieldValidationResult(
+            accepted=True,
+            normalized_value=text,
+            reason="validated_effective_date_relative",
+            confidence=min(0.68, max(0.0, base)),
+            raw_value=value,
+            quality_flags=["relative_period_only", _semantic_flag("relative_term")],
+        )
+
+    if semantic_type == "placeholder_term":
+        base = confidence if confidence is not None else 0.60
+        return FieldValidationResult(
+            accepted=True,
+            normalized_value=text,
+            reason="validated_effective_date_placeholder",
+            confidence=min(0.62, max(0.0, base)),
+            raw_value=value,
+            quality_flags=["text_date", "placeholder_date", _semantic_flag("placeholder_term")],
+        )
+
+    if semantic_type == "renewable_term":
+        base = confidence if confidence is not None else 0.60
+        return FieldValidationResult(
+            accepted=True,
+            normalized_value=text,
+            reason="validated_effective_date_renewable",
+            confidence=min(0.62, max(0.0, base)),
+            raw_value=value,
+            quality_flags=["text_date", "renewable_term", _semantic_flag("renewable_term")],
+        )
+
+    if _DATE_TOKEN_RE.search(text):
         base = confidence if confidence is not None else 0.78
         return FieldValidationResult(
             accepted=True,
@@ -260,7 +319,7 @@ def validate_effective_date(
             reason="validated_effective_date_text",
             confidence=max(0.0, min(0.99, base)),
             raw_value=value,
-            quality_flags=["text_date"],
+            quality_flags=["text_date", _semantic_flag("absolute")],
         )
 
     return FieldValidationResult(
@@ -300,8 +359,9 @@ def validate_expiration_date(
             quality_flags=["low_quality_expiration_date"],
         )
 
+    semantic_type = classify_expiration_date_semantics(text)
     normalized_digits = normalize_digits(text)
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized_digits):
+    if semantic_type == "absolute" and _ISO_DATE_RE.fullmatch(normalized_digits):
         base = confidence if confidence is not None else 0.90
         return FieldValidationResult(
             accepted=True,
@@ -309,14 +369,10 @@ def validate_expiration_date(
             reason="validated_expiration_date_absolute",
             confidence=max(0.0, min(0.99, base)),
             raw_value=value,
-            quality_flags=["absolute_date"],
+            quality_flags=["absolute_date", _semantic_flag("absolute")],
         )
 
-    relative_period = re.search(
-        r"(?:契約締結日|締結日|発効日|効力発生日)[^。\n]{0,20}から[^。\n]{0,20}(?:日|か月|ヶ月|ヵ月|年)間",
-        text,
-    )
-    if relative_period:
+    if semantic_type == "relative_term":
         base = confidence if confidence is not None else 0.64
         return FieldValidationResult(
             accepted=True,
@@ -324,7 +380,29 @@ def validate_expiration_date(
             reason="validated_expiration_date_relative",
             confidence=min(0.66, max(0.0, base)),
             raw_value=value,
-            quality_flags=["relative_period_only"],
+            quality_flags=["relative_period_only", _semantic_flag("relative_term")],
+        )
+
+    if semantic_type == "placeholder_term":
+        base = confidence if confidence is not None else 0.60
+        return FieldValidationResult(
+            accepted=True,
+            normalized_value=text,
+            reason="validated_expiration_date_placeholder",
+            confidence=min(0.62, max(0.0, base)),
+            raw_value=value,
+            quality_flags=["text_date", "placeholder_date", _semantic_flag("placeholder_term")],
+        )
+
+    if semantic_type == "renewable_term":
+        base = confidence if confidence is not None else 0.62
+        return FieldValidationResult(
+            accepted=True,
+            normalized_value=text,
+            reason="validated_expiration_date_renewable",
+            confidence=min(0.64, max(0.0, base)),
+            raw_value=value,
+            quality_flags=["text_date", "renewable_term", _semantic_flag("renewable_term")],
         )
 
     if text in {"満了日", "終了日", "まで", "満了"} or len(text) <= 4:
@@ -344,7 +422,7 @@ def validate_expiration_date(
         reason="validated_expiration_date_text",
         confidence=max(0.0, min(0.99, base)),
         raw_value=value,
-        quality_flags=["text_date"],
+        quality_flags=["text_date", _semantic_flag("relative_term")],
     )
 
 
@@ -478,3 +556,41 @@ def _extract_company_tail(text: str) -> str | None:
     if not match:
         return None
     return _normalize_counterparty_candidate(match.group(1))
+
+
+def classify_effective_date_semantics(text: str) -> str:
+    normalized = normalize_text(text)
+    normalized_digits = normalize_digits(normalized)
+    if _ISO_DATE_RE.fullmatch(normalized_digits):
+        return "absolute"
+    if re.search(r"(?:本契約締結日|契約締結日|締結日)\s*(?:から|より)$", normalized):
+        return "anchor_only"
+    if _RELATIVE_EFFECTIVE_TERM_RE.search(normalized):
+        return "relative_term"
+    if _PLACEHOLDER_TERM_RE.search(normalized):
+        return "placeholder_term"
+    if _RENEWABLE_TERM_RE.search(normalized):
+        return "renewable_term"
+    if _DATE_TOKEN_RE.search(normalized):
+        return "absolute"
+    return "relative_term"
+
+
+def classify_expiration_date_semantics(text: str) -> str:
+    normalized = normalize_text(text)
+    normalized_digits = normalize_digits(normalized)
+    if _ISO_DATE_RE.fullmatch(normalized_digits):
+        return "absolute"
+    if _RENEWABLE_TERM_RE.search(normalized):
+        return "renewable_term"
+    if _PLACEHOLDER_TERM_RE.search(normalized):
+        return "placeholder_term"
+    if _RELATIVE_EXPIRATION_TERM_RE.search(normalized) or "有効期間" in normalized or "契約期間" in normalized:
+        return "relative_term"
+    if _DATE_TOKEN_RE.search(normalized):
+        return "absolute"
+    return "relative_term"
+
+
+def _semantic_flag(semantic_type: str) -> str:
+    return f"semantic_type:{semantic_type}"

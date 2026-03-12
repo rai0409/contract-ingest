@@ -58,15 +58,15 @@ def infer_contract_type(
 def route_field_bias(route: str, field_name: str) -> float:
     route_key = normalize_text(route).upper()
     if route_key == ROUTE_NDA:
-        if field_name in {"governing_law", "jurisdiction", "expiration_date"}:
+        if field_name in {"governing_law", "jurisdiction", "expiration_date", "effective_date"}:
             return 0.03
         return 0.0
     if route_key == ROUTE_SERVICE:
-        if field_name in {"effective_date", "expiration_date", "counterparties"}:
+        if field_name in {"effective_date", "expiration_date", "counterparties", "governing_law"}:
             return 0.03
         return 0.0
     if route_key == ROUTE_LICENSE_OR_ITAKU:
-        if field_name in {"counterparties", "jurisdiction", "expiration_date"}:
+        if field_name in {"counterparties", "jurisdiction", "expiration_date", "governing_law", "effective_date"}:
             return 0.03
         return 0.0
     return 0.0
