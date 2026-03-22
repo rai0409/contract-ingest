@@ -43,9 +43,16 @@ from contract_ingest.utils.time import to_iso_date
 _ABSOLUTE_DATE_TOKEN_PATTERN = (
     r"(?:令和\s*[0-9０-９元]{1,2}年\s*[0-9０-９]{1,2}月\s*[0-9０-９]{1,2}日"
     r"|[0-9０-９]{4}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日"
-    r"|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2}\s*[/.]\s*[0-9０-９]{1,2})"
+    r"|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2}\s*[/.]\s*[0-9０-９]{1,2}"
+    r"|[0-9０-９]{4}-[0-9０-９]{2}-[0-9０-９]{2})"
 )
 _ABSOLUTE_DATE_TOKEN_RE = re.compile(_ABSOLUTE_DATE_TOKEN_PATTERN)
+_ENGLISH_MONTH_DATE_TOKEN_PATTERN = (
+    r"(?:(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|"
+    r"Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},\s*\d{4}"
+    r"|\d{1,2}\s+(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|"
+    r"Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{4})"
+)
 
 
 class ContractFieldExtractor:
@@ -120,9 +127,9 @@ class ContractFieldExtractor:
             field=counterparties,
             validator=validate_counterparties,
             rejection_reason=ReasonCode.LOW_QUALITY_COUNTERPARTY,
-            accepted_warning_reason=ReasonCode.LOW_QUALITY_COUNTERPARTY,
+            accepted_warning_reason=ReasonCode.PARTIAL_COUNTERPARTY,
             rejection_message="counterparty candidate was rejected by quality gate",
-            accepted_warning_message="counterparty candidate was partially accepted by quality gate",
+            accepted_warning_message="counterparty candidate contains partial fragments",
         )
         effective_date, effective_date_issues = self._apply_field_validation_gate(
             field=effective_date,
@@ -389,6 +396,36 @@ class ContractFieldExtractor:
         if absolute.value is not None:
             return absolute
 
+        english_absolute_patterns = [
+            re.compile(
+                rf"(?:effective\s+as\s+of|effective\s+on\s+and\s+after|from\s+and\s+after|"
+                rf"entered\s+into\s+as\s+of|made\s+and\s+entered\s+into\s+as\s+of|dated\s+as\s+of|"
+                rf"commencing\s+on|date\s+of\s+execution|execution\s+date)\s*(?P<date>{_ENGLISH_MONTH_DATE_TOKEN_PATTERN}|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                rf"as\s+of\s+(?P<date>{_ENGLISH_MONTH_DATE_TOKEN_PATTERN}|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})",
+                re.IGNORECASE,
+            ),
+        ]
+        for block in blocks:
+            text = normalize_text(block.text)
+            for pattern in english_absolute_patterns:
+                match = pattern.search(text)
+                if not match:
+                    continue
+                raw_date = normalize_text(match.group("date"))
+                iso = self._normalize_date_token(raw_date)
+                if iso is None:
+                    continue
+                return ExtractedField(
+                    field_name="effective_date",
+                    value=iso,
+                    confidence=0.90,
+                    reason="matched_effective_date_rule",
+                    evidence_refs=[self._to_ref(block)],
+                )
+
         relative_pattern = re.compile(
             r"(?P<expr>(?:本契約|効力|発効)[^。\n]{0,40}(?:契約締結日|契約締結の日|締結日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間)"
         )
@@ -410,12 +447,22 @@ class ContractFieldExtractor:
         anchor_pattern = re.compile(
             r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
         )
+        english_anchor_pattern = re.compile(
+            r"(?P<anchor>(?:as\s+of\s+the\s+date\s+first\s+written\s+above|on\s+the\s+date\s+of\s+last\s+signature))",
+            re.IGNORECASE,
+        )
         anchor_refs: list[EvidenceRef] = []
         anchor_value: str | None = None
         for block in blocks:
             text = normalize_text(block.text)
             match = anchor_pattern.search(text)
             if not match:
+                english_match = english_anchor_pattern.search(text)
+                if not english_match:
+                    continue
+                if anchor_value is None:
+                    anchor_value = normalize_text(english_match.group("anchor")).lower()
+                anchor_refs.append(self._to_ref(block))
                 continue
             if anchor_value is None:
                 anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
@@ -435,6 +482,43 @@ class ContractFieldExtractor:
         if signature_candidate is not None:
             candidate_value, refs = signature_candidate
             return self._make_effective_signature_date_field(candidate_value, refs)
+
+        period_clause_patterns = [
+            re.compile(rf"本契約の有効期間は[、,]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*から"),
+            re.compile(rf"契約期間は[、,]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*から"),
+            re.compile(rf"委託期間は[、,]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*から"),
+            re.compile(rf"有効期間は[、,]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*から"),
+            re.compile(
+                r"本契約の有効期間は[、,]?\s*(?P<date>令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)\s*から"
+            ),
+            re.compile(
+                r"契約期間は[、,]?\s*(?P<date>令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)\s*から"
+            ),
+            re.compile(
+                r"委託期間は[、,]?\s*(?P<date>令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)\s*から"
+            ),
+            re.compile(
+                r"有効期間は[、,]?\s*(?P<date>令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)\s*から"
+            ),
+        ]
+        for block in blocks:
+            text = normalize_text(block.text)
+            for pattern in period_clause_patterns:
+                match = pattern.search(text)
+                if not match:
+                    continue
+                raw_date = normalize_text(match.group("date"))
+                normalized_date = self._normalize_date_token(raw_date) or self._extract_placeholder_date_token(raw_date)
+                if normalized_date is None:
+                    continue
+                return ExtractedField(
+                    field_name="effective_date",
+                    value=normalized_date,
+                    confidence=0.64,
+                    reason="matched_effective_date_period_clause_fallback",
+                    evidence_refs=[self._to_ref(block)],
+                    flags=["period_clause_fallback"],
+                )
 
         return absolute
 
@@ -725,6 +809,7 @@ class ContractFieldExtractor:
 
     def _extract_counterparties(self, blocks: list[EvidenceBlock]) -> ExtractedField:
         role_hits: dict[str, tuple[float, str, EvidenceRef]] = {}
+        partial_fragments_detected = False
         role_patterns: list[tuple[re.Pattern[str], float]] = [
             (
                 re.compile(
@@ -745,7 +830,8 @@ class ContractFieldExtractor:
 
         max_page = max((block.page for block in blocks), default=1)
 
-        for block in blocks[:80]:
+        scanned_blocks = blocks[:80]
+        for idx, block in enumerate(scanned_blocks):
             text = normalize_text(block.text)
             if not text:
                 continue
@@ -755,30 +841,48 @@ class ContractFieldExtractor:
                 or any(marker in text for marker in ["記名押印", "署名", "住所", "代表者"])
             )
             zone_bonus = 0.25 if is_signature_zone else (0.18 if block.reading_order <= 30 else 0.0)
+            candidate_texts = [text]
+            if idx + 1 < len(scanned_blocks):
+                next_block = scanned_blocks[idx + 1]
+                if next_block.page == block.page and (next_block.reading_order - block.reading_order) <= 2:
+                    next_text = normalize_text(next_block.text)
+                    if next_text:
+                        candidate_texts.append(f"{text} {next_text}")
 
-            for pattern, base_score in role_patterns:
-                for match in pattern.finditer(text):
-                    role = normalize_text(match.group("role"))
-                    name = self._normalize_party_name(match.group("name"))
-                    if role not in {"甲", "乙"} or not self._is_valid_party_name(name):
-                        continue
-                    score = base_score + zone_bonus
-                    previous = role_hits.get(role)
-                    if previous is None or score > previous[0]:
-                        role_hits[role] = (score, name, self._to_ref(block))
+            for role_text in candidate_texts:
+                for pattern, base_score in role_patterns:
+                    for match in pattern.finditer(role_text):
+                        role = normalize_text(match.group("role"))
+                        name = self._normalize_party_name(match.group("name"))
+                        if role not in {"甲", "乙"}:
+                            continue
+                        if not self._is_valid_party_name(name):
+                            partial_fragments_detected = True
+                            continue
+                        score = base_score + zone_bonus
+                        if role_text != text:
+                            score -= 0.04
+                        previous = role_hits.get(role)
+                        if previous is None or score > previous[0]:
+                            role_hits[role] = (score, name, self._to_ref(block))
 
         if role_hits:
             ordered_roles = [role for role in ["甲", "乙"] if role in role_hits]
             parties = [role_hits[role][1] for role in ordered_roles]
             refs = [role_hits[role][2] for role in ordered_roles]
             confidence = 0.92 if len(parties) == 2 else 0.76
+            flags: list[str] = []
+            if len(parties) == 1:
+                flags.append("single_party_detected")
+            if partial_fragments_detected and len(parties) < 2:
+                flags.append("counterparty_partial_accept")
             return ExtractedField(
                 field_name="counterparties",
                 value=parties,
                 confidence=confidence,
                 reason="matched_party_role_japanese_rule",
                 evidence_refs=unique_preserve_order_refs(refs),
-                flags=[] if len(parties) == 2 else ["single_party_detected"],
+                flags=flags,
             )
 
         fallback_names: list[str] = []
@@ -803,7 +907,8 @@ class ContractFieldExtractor:
                 confidence=0.65,
                 reason="matched_party_name_fallback_rule",
                 evidence_refs=unique_preserve_order_refs(fallback_refs),
-                flags=["party_role_not_found"],
+                flags=["party_role_not_found"]
+                + (["counterparty_partial_accept"] if partial_fragments_detected and len(unique_names) < 2 else []),
             )
 
         return ExtractedField(
@@ -819,13 +924,18 @@ class ContractFieldExtractor:
     def _normalize_party_name(raw_name: str) -> str:
         text = normalize_text(raw_name)
         text = re.sub(r"(?:以下\s*[「『]?[甲乙].*)$", "", text)
+        text = re.sub(r"(?:という。?\)?\s*(?:と|と、)?\s*)$", "", text)
         text = text.replace("㈱", "株式会社")
         text = re.sub(r"^[（(]\s*株\s*[）)]", "株式会社", text)
         text = re.sub(r"[（(]\s*株\s*[）)]", "株式会社", text)
         text = re.sub(r"^[（(]\s*同\s*[）)]", "合同会社", text)
         text = re.sub(r"[（(]\s*同\s*[）)]", "合同会社", text)
+        text = re.sub(r"^[、,。\s]+", "", text)
         text = re.sub(r"\s+", " ", text).strip(" 　:：、，。;；")
         text = re.sub(r"(御中|様)$", "", text).strip(" 　")
+        text = text.rstrip("と、のはにを")
+        if text.count("(") != text.count(")") or text.count("（") != text.count("）"):
+            text = text.replace("(", "").replace(")", "").replace("（", "").replace("）", "").strip()
         return text
 
     @staticmethod
@@ -833,6 +943,12 @@ class ContractFieldExtractor:
         if len(name) < 2:
             return False
         if name in {"甲", "乙", "当事者", "本契約"}:
+            return False
+        if name.endswith(("と", "と、", "の", "は", "に", "を", "で")):
+            return False
+        if any(fragment in name for fragment in ["という。", "という", "とする", "以下"]):
+            return False
+        if name in {"株式会社", "合同会社", "有限会社", "公立大学法人", "国立大学法人", "独立行政法人"}:
             return False
         if re.fullmatch(r"[0-9]+", normalize_digits(name)):
             return False
@@ -941,10 +1057,13 @@ class ContractFieldExtractor:
             ),
             re.compile(r"(?P<law>日本法|日本国法)[^。\n]{0,20}?(?:に準拠|を適用|による)", re.IGNORECASE),
             re.compile(r"本契約に関する紛争には[^。\n]{0,30}?(?P<law>日本法|日本国法)[^。\n]{0,20}?を適用", re.IGNORECASE),
+            re.compile(
+                r"本契約[^。\n]{0,80}?(?:適用される法|関する一切の事項)[^。\n]{0,60}?(?P<law>日本法|日本国法)[^。\n]{0,20}?(?:とする|に従う|による)",
+                re.IGNORECASE,
+            ),
             re.compile(r"準拠法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
             re.compile(r"適用法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
         ]
-
         clause_keywords = (
             "準拠法",
             "適用法",
@@ -985,6 +1104,22 @@ class ContractFieldExtractor:
                         return ExtractedField(
                             field_name="governing_law",
                             value=law,
+                            confidence=confidence,
+                            reason="matched_governing_law_clause_rule",
+                            evidence_refs=[scope_ref],
+                        )
+
+                if re.search(r"[A-Za-z]", sentence_clean):
+                    english_candidate = validate_governing_law(
+                        sentence_clean,
+                        reason="matched_governing_law_clause_rule",
+                        confidence=0.90 if clause_related else 0.86,
+                    )
+                    if english_candidate.accepted:
+                        confidence = 0.90 if clause_related else 0.86
+                        return ExtractedField(
+                            field_name="governing_law",
+                            value=sentence_clean,
                             confidence=confidence,
                             reason="matched_governing_law_clause_rule",
                             evidence_refs=[scope_ref],
@@ -1092,11 +1227,13 @@ class ContractFieldExtractor:
     ) -> list[tuple[str, EvidenceRef, bool]]:
         scopes: list[tuple[str, EvidenceRef, bool]] = []
         if clauses:
+            tail_start = max(0, len(clauses) - 5)
             prioritized_clauses = sorted(
                 enumerate(clauses),
                 key=lambda item: (
                     -self._clause_priority(item[1], clause_keywords),
-                    item[0],
+                    -(1 if item[0] >= tail_start else 0),
+                    -item[0],
                 ),
             )
             for _, clause in prioritized_clauses:
@@ -1211,6 +1348,8 @@ class ContractFieldExtractor:
         normalized = normalize_text(raw_text)
         normalized = re.sub(r"^第[0-9０-９一二三四五六七八九十百千〇零]+条", "", normalized)
         normalized = re.sub(r"^(準拠法|管轄)", "", normalized)
+        normalized = re.sub(r"^(専属的)?合意管轄", "", normalized)
+        normalized = re.sub(r"^第一審(?:の)?", "", normalized)
         tail_match = re.search(r"([^\s、。\n]{2,20}裁判所)$", normalized)
         if tail_match:
             return normalize_text(tail_match.group(1))
@@ -1309,6 +1448,16 @@ class ContractFieldExtractor:
     def _normalize_date_token(raw_date: str) -> str | None:
         normalized = normalize_digits(normalize_text(raw_date))
 
+        iso_match = re.search(r"(?P<y>[0-9]{4})-(?P<m>[0-9]{1,2})-(?P<d>[0-9]{1,2})", normalized)
+        if iso_match:
+            year = int(iso_match.group("y"))
+            month = int(iso_match.group("m"))
+            day = int(iso_match.group("d"))
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                return None
+
         reiwa_match = re.search(r"令和\s*(?P<y>元|[0-9]{1,2})年\s*(?P<m>[0-9]{1,2})月\s*(?P<d>[0-9]{1,2})日", normalized)
         if reiwa_match:
             year_token = reiwa_match.group("y")
@@ -1325,6 +1474,53 @@ class ContractFieldExtractor:
             year = int(ymd_slash_match.group("y"))
             month = int(ymd_slash_match.group("m"))
             day = int(ymd_slash_match.group("d"))
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                return None
+
+        month_map = {
+            "jan": 1,
+            "january": 1,
+            "feb": 2,
+            "february": 2,
+            "mar": 3,
+            "march": 3,
+            "apr": 4,
+            "april": 4,
+            "may": 5,
+            "jun": 6,
+            "june": 6,
+            "jul": 7,
+            "july": 7,
+            "aug": 8,
+            "august": 8,
+            "sep": 9,
+            "sept": 9,
+            "september": 9,
+            "oct": 10,
+            "october": 10,
+            "nov": 11,
+            "november": 11,
+            "dec": 12,
+            "december": 12,
+        }
+        lower = normalized.lower()
+        month_first = re.search(r"([a-z]+)\s+([0-9]{1,2}),\s*([0-9]{4})", lower)
+        if month_first and month_first.group(1) in month_map:
+            month = month_map[month_first.group(1)]
+            day = int(month_first.group(2))
+            year = int(month_first.group(3))
+            try:
+                return date(year, month, day).isoformat()
+            except ValueError:
+                return None
+
+        day_first = re.search(r"([0-9]{1,2})\s+([a-z]+)\s+([0-9]{4})", lower)
+        if day_first and day_first.group(2) in month_map:
+            day = int(day_first.group(1))
+            month = month_map[day_first.group(2)]
+            year = int(day_first.group(3))
             try:
                 return date(year, month, day).isoformat()
             except ValueError:

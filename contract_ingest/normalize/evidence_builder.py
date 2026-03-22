@@ -37,4 +37,5 @@ class EvidenceBuilder:
             reading_order=block.reading_order,
             source_hash=source_hash,
             pipeline_version=self.settings.pipeline_version,
+            section_type=block.section_type,
         )

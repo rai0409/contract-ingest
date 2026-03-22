@@ -31,6 +31,7 @@ class DocumentJsonWriter:
         self,
         output_dir: Path,
         doc_id: str,
+        title: str | None,
         source_file: str,
         document_kind: DocumentKind,
         source_hash: str,
@@ -45,6 +46,7 @@ class DocumentJsonWriter:
 
         payload = self._build_payload(
             doc_id=doc_id,
+            title=title,
             source_file=source_file,
             document_kind=document_kind,
             source_hash=source_hash,
@@ -73,6 +75,7 @@ class DocumentJsonWriter:
     def _build_payload(
         self,
         doc_id: str,
+        title: str | None,
         source_file: str,
         document_kind: DocumentKind,
         source_hash: str,
@@ -117,6 +120,7 @@ class DocumentJsonWriter:
                 "reading_order": block.reading_order,
                 "source_hash": block.source_hash,
                 "pipeline_version": block.pipeline_version,
+                "section_type": block.section_type.value,
             }
             for block in evidence_blocks
         ]
@@ -141,6 +145,7 @@ class DocumentJsonWriter:
                     for ref in clause.evidence_refs
                 ],
                 "flags": clause.flags,
+                "section_type": clause.section_type.value,
             }
             for clause in clause_result.clauses
         ]
@@ -149,6 +154,7 @@ class DocumentJsonWriter:
 
         return {
             "doc_id": doc_id,
+            "title": title,
             "source_file": source_file,
             "document_kind": document_kind.value,
             "pipeline_version": self.settings.pipeline_version,

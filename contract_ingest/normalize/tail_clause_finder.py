@@ -75,6 +75,8 @@ def find_tail_governing_law_candidates(
         compact = _compact(text)
         if "準拠法" not in compact and "日本法" not in compact and "日本国法" not in compact:
             continue
+        if any(token in compact for token in ["規程", "協議", "遵守", "適用法令"]) and "日本法" not in compact and "日本国法" not in compact:
+            continue
         law: str | None = None
         if re.search(
             r"本契約[^。]{0,96}(?:成立|効力|履行|解釈)[^。]{0,96}(日本法|日本国法)[^。]{0,40}(?:による|に準拠|を適用)",
@@ -87,6 +89,11 @@ def find_tail_governing_law_candidates(
         ):
             law = "日本法"
         elif re.search(r"本契約に関する紛争には[^。]{0,40}(日本法|日本国法)[^。]{0,20}を適用", compact):
+            law = "日本法"
+        elif re.search(
+            r"本契約[^。]{0,120}(?:適用される法|関する一切の事項)[^。]{0,80}(日本法|日本国法)[^。]{0,20}(?:とする|に従う|による)",
+            compact,
+        ):
             law = "日本法"
         elif re.search(r"(日本法|日本国法)[^。]{0,32}(?:に準拠|を適用|による)", compact):
             law = "日本法"

@@ -1,0 +1,838 @@
+diff --git a/contract_ingest/extract/block_merger.py b/contract_ingest/extract/block_merger.py
+index f4f7395..fbbd391 100644
+--- a/contract_ingest/extract/block_merger.py
++++ b/contract_ingest/extract/block_merger.py
+@@ -411,6 +411,8 @@ class BlockMerger:
+             repeated_margin_texts=repeated_margin_texts,
+         ):
+             return "header_footer"
++        if BlockMerger._is_short_critical_clause_text(normalized):
++            return "body"
+         if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
+             return "table"
+         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+@@ -505,14 +507,22 @@ class BlockMerger:
+             if not any(marker in curr_text for marker in low_value_markers):
+                 return False
+         if len(prev_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(prev_text):
+-            if not any(marker in prev_text for marker in low_value_markers):
++            if not any(marker in prev_text for marker in low_value_markers) and not BlockMerger._is_short_critical_clause_text(prev_text):
+                 return False
+         if len(curr_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(curr_text):
+-            if not any(marker in curr_text for marker in low_value_markers):
++            if not any(marker in curr_text for marker in low_value_markers) and not BlockMerger._is_short_critical_clause_text(curr_text):
+                 return False
+-        if is_fragment_like_text(prev_text) and len(prev_text) <= 12:
++        if (
++            is_fragment_like_text(prev_text)
++            and len(prev_text) <= 12
++            and not BlockMerger._is_short_critical_clause_text(prev_text)
++        ):
+             return False
+-        if is_fragment_like_text(curr_text) and len(curr_text) <= 12:
++        if (
++            is_fragment_like_text(curr_text)
++            and len(curr_text) <= 12
++            and not BlockMerger._is_short_critical_clause_text(curr_text)
++        ):
+             return False
+ 
+         prev_bbox = previous["bbox"]
+@@ -609,3 +619,43 @@ class BlockMerger:
+             return True
+         appendix_markers = ("別紙", "別表", "別添", "付属資料", "仕様書")
+         return len(normalized) <= 24 and any(marker in normalized for marker in appendix_markers)
++
++    @staticmethod
++    def _is_short_critical_clause_text(text: str) -> bool:
++        normalized = normalize_text(text)
++        if not normalized:
++            return False
++        compact = normalize_text(normalized).replace(" ", "")
++        if len(compact) > 36:
++            return False
++        if any(token in compact for token in ["記名押印", "署名欄", "代表者", "氏名", "住所", "㊞"]):
++            return False
++        japanese_markers = (
++            "準拠法",
++            "適用法",
++            "日本法",
++            "日本国法",
++            "管轄",
++            "裁判所",
++            "契約締結日",
++            "効力発生日",
++            "発効日",
++        )
++        if any(marker in compact for marker in japanese_markers):
++            return True
++        lower = normalized.lower()
++        english_phrases = (
++            "governed by",
++            "laws of",
++            "effective date",
++            "effective as of",
++            "entered into as of",
++            "dated as of",
++            "from and after",
++            "on and after",
++            "execution date",
++            "date of execution",
++            "date first written above",
++            "date of last signature",
++        )
++        return any(phrase in lower for phrase in english_phrases)
+diff --git a/contract_ingest/extract/layout.py b/contract_ingest/extract/layout.py
+index c8f96f7..d6030ae 100644
+--- a/contract_ingest/extract/layout.py
++++ b/contract_ingest/extract/layout.py
+@@ -329,6 +329,8 @@ class LayoutAnalyzer:
+             next_bbox=next_bbox,
+         ):
+             return "body"
++        if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
++            return "body"
+         if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
+             return "body"
+         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+@@ -368,6 +370,25 @@ class LayoutAnalyzer:
+             return True
+         if len(text) >= 16 and hiragana_count >= 5:
+             return True
++        lower_text = text.lower()
++        english_words = re.findall(r"[a-z]+", lower_text)
++        english_markers = (
++            "agreement",
++            "governed",
++            "effective",
++            "execution",
++            "signature",
++            "date",
++            "laws",
++            "jurisdiction",
++            "construed",
++            "entered",
++            "commencing",
++        )
++        if len(english_words) >= 4 and any(marker in lower_text for marker in english_markers):
++            return True
++        if len(english_words) >= 6 and lower_text.endswith((".", ";")):
++            return True
+         return len(text) >= 24 and hiragana_count >= 3
+ 
+     @staticmethod
+@@ -457,7 +478,8 @@ class LayoutAnalyzer:
+         next_text: str | None,
+         next_bbox: BBox | None,
+     ) -> bool:
+-        if len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text):
++        is_short_critical = LayoutAnalyzer._looks_like_short_critical_clause_line(text)
++        if not is_short_critical and (len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text)):
+             return False
+ 
+         def _compatible_neighbor(candidate_text: str | None, candidate_bbox: BBox | None, gap: float) -> bool:
+@@ -469,9 +491,11 @@ class LayoutAnalyzer:
+             if is_page_number_text(candidate) or is_annotation_like_text(candidate):
+                 return False
+             if LayoutAnalyzer._is_low_value_fragment_text(candidate):
+-                return False
++                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
++                    return False
+             if len(candidate) < 10 and not LayoutAnalyzer._looks_like_sentence_text(candidate):
+-                return False
++                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
++                    return False
+             min_width = min(bbox.width, candidate_bbox.width)
+             max_width = max(bbox.width, candidate_bbox.width, 1.0)
+             width_ratio = min_width / max_width
+@@ -487,9 +511,51 @@ class LayoutAnalyzer:
+             return True
+         if prev_ok or next_ok:
+             near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
+-            return near_margin or len(text) >= 18
++            return near_margin or len(text) >= 18 or is_short_critical
+         return False
+ 
++    @staticmethod
++    def _looks_like_short_critical_clause_line(text: str) -> bool:
++        normalized = normalize_text(text)
++        if not normalized:
++            return False
++        compact = re.sub(r"\s+", "", normalized)
++        if len(compact) > 36:
++            return False
++        if is_annotation_like_text(compact) or is_page_number_text(compact):
++            return False
++        if any(token in compact for token in ["記名押印", "署名欄", "代表者", "氏名", "住所", "㊞"]):
++            return False
++        japanese_markers = (
++            "準拠法",
++            "適用法",
++            "日本法",
++            "日本国法",
++            "管轄",
++            "裁判所",
++            "契約締結日",
++            "効力発生日",
++            "発効日",
++        )
++        if any(marker in compact for marker in japanese_markers):
++            return True
++        lower = normalized.lower()
++        english_phrases = (
++            "governed by",
++            "laws of",
++            "effective date",
++            "effective as of",
++            "entered into as of",
++            "dated as of",
++            "from and after",
++            "on and after",
++            "execution date",
++            "date of execution",
++            "date first written above",
++            "date of last signature",
++        )
++        return any(phrase in lower for phrase in english_phrases)
++
+     @staticmethod
+     def _is_low_value_fragment_text(text: str) -> bool:
+         if not text:
+@@ -626,6 +692,8 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
+         return BlockType.OTHER
+     if LayoutAnalyzer._is_appendix_heading(normalized):
+         return BlockType.TEXT
++    if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
++        return BlockType.TEXT
+     if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
+         return BlockType.TEXT
+     if LayoutAnalyzer._is_low_value_fragment_text(normalized):
+diff --git a/contract_ingest/normalize/field_extractor.py b/contract_ingest/normalize/field_extractor.py
+index ccb64e9..7bfec5e 100644
+--- a/contract_ingest/normalize/field_extractor.py
++++ b/contract_ingest/normalize/field_extractor.py
+@@ -43,9 +43,16 @@ from contract_ingest.utils.time import to_iso_date
+ _ABSOLUTE_DATE_TOKEN_PATTERN = (
+     r"(?:令和\s*[0-9０-９元]{1,2}年\s*[0-9０-９]{1,2}月\s*[0-9０-９]{1,2}日"
+     r"|[0-9０-９]{4}\s*年\s*[0-9０-９]{1,2}\s*月\s*[0-9０-９]{1,2}\s*日"
+-    r"|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2}\s*[/.]\s*[0-9０-９]{1,2})"
++    r"|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2}\s*[/.]\s*[0-9０-９]{1,2}"
++    r"|[0-9０-９]{4}-[0-9０-９]{2}-[0-9０-９]{2})"
+ )
+ _ABSOLUTE_DATE_TOKEN_RE = re.compile(_ABSOLUTE_DATE_TOKEN_PATTERN)
++_ENGLISH_MONTH_DATE_TOKEN_PATTERN = (
++    r"(?:(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|"
++    r"Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},\s*\d{4}"
++    r"|\d{1,2}\s+(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|"
++    r"Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{4})"
++)
+ 
+ 
+ class ContractFieldExtractor:
+@@ -389,6 +396,36 @@ class ContractFieldExtractor:
+         if absolute.value is not None:
+             return absolute
+ 
++        english_absolute_patterns = [
++            re.compile(
++                rf"(?:effective\s+as\s+of|effective\s+on\s+and\s+after|from\s+and\s+after|"
++                rf"entered\s+into\s+as\s+of|made\s+and\s+entered\s+into\s+as\s+of|dated\s+as\s+of|"
++                rf"commencing\s+on|date\s+of\s+execution|execution\s+date)\s*(?P<date>{_ENGLISH_MONTH_DATE_TOKEN_PATTERN}|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})",
++                re.IGNORECASE,
++            ),
++            re.compile(
++                rf"as\s+of\s+(?P<date>{_ENGLISH_MONTH_DATE_TOKEN_PATTERN}|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})",
++                re.IGNORECASE,
++            ),
++        ]
++        for block in blocks:
++            text = normalize_text(block.text)
++            for pattern in english_absolute_patterns:
++                match = pattern.search(text)
++                if not match:
++                    continue
++                raw_date = normalize_text(match.group("date"))
++                iso = self._normalize_date_token(raw_date)
++                if iso is None:
++                    continue
++                return ExtractedField(
++                    field_name="effective_date",
++                    value=iso,
++                    confidence=0.90,
++                    reason="matched_effective_date_rule",
++                    evidence_refs=[self._to_ref(block)],
++                )
++
+         relative_pattern = re.compile(
+             r"(?P<expr>(?:本契約|効力|発効)[^。\n]{0,40}(?:契約締結日|契約締結の日|締結日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間)"
+         )
+@@ -410,12 +447,22 @@ class ContractFieldExtractor:
+         anchor_pattern = re.compile(
+             r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
+         )
++        english_anchor_pattern = re.compile(
++            r"(?P<anchor>(?:as\s+of\s+the\s+date\s+first\s+written\s+above|on\s+the\s+date\s+of\s+last\s+signature))",
++            re.IGNORECASE,
++        )
+         anchor_refs: list[EvidenceRef] = []
+         anchor_value: str | None = None
+         for block in blocks:
+             text = normalize_text(block.text)
+             match = anchor_pattern.search(text)
+             if not match:
++                english_match = english_anchor_pattern.search(text)
++                if not english_match:
++                    continue
++                if anchor_value is None:
++                    anchor_value = normalize_text(english_match.group("anchor")).lower()
++                anchor_refs.append(self._to_ref(block))
+                 continue
+             if anchor_value is None:
+                 anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
+@@ -944,7 +991,6 @@ class ContractFieldExtractor:
+             re.compile(r"準拠法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
+             re.compile(r"適用法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
+         ]
+-
+         clause_keywords = (
+             "準拠法",
+             "適用法",
+@@ -990,6 +1036,22 @@ class ContractFieldExtractor:
+                             evidence_refs=[scope_ref],
+                         )
+ 
++                if re.search(r"[A-Za-z]", sentence_clean):
++                    english_candidate = validate_governing_law(
++                        sentence_clean,
++                        reason="matched_governing_law_clause_rule",
++                        confidence=0.90 if clause_related else 0.86,
++                    )
++                    if english_candidate.accepted:
++                        confidence = 0.90 if clause_related else 0.86
++                        return ExtractedField(
++                            field_name="governing_law",
++                            value=sentence_clean,
++                            confidence=confidence,
++                            reason="matched_governing_law_clause_rule",
++                            evidence_refs=[scope_ref],
++                        )
++
+                 if (
+                     (
+                         "準拠法" in sentence_compact
+@@ -1309,6 +1371,16 @@ class ContractFieldExtractor:
+     def _normalize_date_token(raw_date: str) -> str | None:
+         normalized = normalize_digits(normalize_text(raw_date))
+ 
++        iso_match = re.search(r"(?P<y>[0-9]{4})-(?P<m>[0-9]{1,2})-(?P<d>[0-9]{1,2})", normalized)
++        if iso_match:
++            year = int(iso_match.group("y"))
++            month = int(iso_match.group("m"))
++            day = int(iso_match.group("d"))
++            try:
++                return date(year, month, day).isoformat()
++            except ValueError:
++                return None
++
+         reiwa_match = re.search(r"令和\s*(?P<y>元|[0-9]{1,2})年\s*(?P<m>[0-9]{1,2})月\s*(?P<d>[0-9]{1,2})日", normalized)
+         if reiwa_match:
+             year_token = reiwa_match.group("y")
+@@ -1330,6 +1402,53 @@ class ContractFieldExtractor:
+             except ValueError:
+                 return None
+ 
++        month_map = {
++            "jan": 1,
++            "january": 1,
++            "feb": 2,
++            "february": 2,
++            "mar": 3,
++            "march": 3,
++            "apr": 4,
++            "april": 4,
++            "may": 5,
++            "jun": 6,
++            "june": 6,
++            "jul": 7,
++            "july": 7,
++            "aug": 8,
++            "august": 8,
++            "sep": 9,
++            "sept": 9,
++            "september": 9,
++            "oct": 10,
++            "october": 10,
++            "nov": 11,
++            "november": 11,
++            "dec": 12,
++            "december": 12,
++        }
++        lower = normalized.lower()
++        month_first = re.search(r"([a-z]+)\s+([0-9]{1,2}),\s*([0-9]{4})", lower)
++        if month_first and month_first.group(1) in month_map:
++            month = month_map[month_first.group(1)]
++            day = int(month_first.group(2))
++            year = int(month_first.group(3))
++            try:
++                return date(year, month, day).isoformat()
++            except ValueError:
++                return None
++
++        day_first = re.search(r"([0-9]{1,2})\s+([a-z]+)\s+([0-9]{4})", lower)
++        if day_first and day_first.group(2) in month_map:
++            day = int(day_first.group(1))
++            month = month_map[day_first.group(2)]
++            year = int(day_first.group(3))
++            try:
++                return date(year, month, day).isoformat()
++            except ValueError:
++                return None
++
+         return to_iso_date(normalized)
+ 
+     @staticmethod
+diff --git a/contract_ingest/normalize/field_validators.py b/contract_ingest/normalize/field_validators.py
+index a7aa8a2..6e18300 100644
+--- a/contract_ingest/normalize/field_validators.py
++++ b/contract_ingest/normalize/field_validators.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass, field
++from datetime import date
+ import re
+ 
+ from contract_ingest.utils.text import normalize_digits, normalize_text, unique_preserve_order
+@@ -18,6 +19,33 @@ _RENEWABLE_TERM_RE = re.compile(r"(?:自動更新|同一条件で更新|更新
+ _RELATIVE_JURISDICTION_RE = re.compile(
+     r"(?:(?:甲|乙|被告|原告|相手方|当事者)\s*の\s*)?(?:所在地|住所|本店所在地|本店所在地等|本店)\s*を\s*管轄する裁判所"
+ )
++_ENGLISH_EFFECTIVE_ANCHOR_ONLY_RE = re.compile(
++    r"(?:^|[^a-z])(?:(?:on|as of|upon)\s+)?(?:the\s+)?(?:execution date|date of execution)(?:$|[^a-z])",
++    re.IGNORECASE,
++)
++_ENGLISH_MONTH_DATE_RE = re.compile(
++    r"^(?P<month>Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|"
++    r"Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+(?P<day>\d{1,2}),\s*(?P<year>\d{4})$",
++    re.IGNORECASE,
++)
++_ENGLISH_DAY_MONTH_DATE_RE = re.compile(
++    r"^(?P<day>\d{1,2})\s+(?P<month>Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|"
++    r"Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+(?P<year>\d{4})$",
++    re.IGNORECASE,
++)
++_ENGLISH_GOVERNING_LAW_CONTEXT_RE = re.compile(
++    r"(?:governed by|construed in accordance with|in accordance with|under the laws? of)",
++    re.IGNORECASE,
++)
++_ENGLISH_GOVERNING_LAW_OF_RE = re.compile(
++    r"(?:(?:governed by(?: and construed in accordance with)?)|(?:construed in accordance with)|"
++    r"(?:in accordance with)|(?:under))\s+(?P<law>(?:the\s+)?(?:internal\s+|substantive\s+)?laws? of\s+[A-Za-z][A-Za-z&,' .-]{1,80})",
++    re.IGNORECASE,
++)
++_ENGLISH_GOVERNING_BARE_LAW_RE = re.compile(
++    r"(?:governed by|construed in accordance with)\s+(?P<law>[A-Za-z][A-Za-z&,' .-]{1,80}\s+law)",
++    re.IGNORECASE,
++)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -191,6 +219,17 @@ def validate_governing_law(
+             raw_value=value,
+         )
+ 
++    english_normalized = _normalize_english_governing_law(text, reason=reason)
++    if english_normalized is not None:
++        base = confidence if confidence is not None else 0.84
++        return FieldValidationResult(
++            accepted=True,
++            normalized_value=english_normalized,
++            reason="validated_governing_law",
++            confidence=max(0.0, min(0.99, base)),
++            raw_value=value,
++        )
++
+     match = re.search(r"([^\s、。]{2,10}法)", text)
+     if not match:
+         return FieldValidationResult(
+@@ -253,12 +292,13 @@ def validate_effective_date(
+         )
+ 
+     semantic_type = classify_effective_date_semantics(text)
++    normalized_absolute = _normalize_english_explicit_date(text)
+ 
+-    if semantic_type == "absolute" and _ISO_DATE_RE.fullmatch(normalize_digits(text)):
++    if semantic_type == "absolute" and normalized_absolute is not None:
+         base = confidence if confidence is not None else 0.92
+         return FieldValidationResult(
+             accepted=True,
+-            normalized_value=normalize_digits(text),
++            normalized_value=normalized_absolute,
+             reason="validated_effective_date_absolute",
+             confidence=max(0.0, min(0.99, base)),
+             raw_value=value,
+@@ -563,8 +603,12 @@ def classify_effective_date_semantics(text: str) -> str:
+     normalized_digits = normalize_digits(normalized)
+     if _ISO_DATE_RE.fullmatch(normalized_digits):
+         return "absolute"
++    if _normalize_english_explicit_date(normalized) is not None:
++        return "absolute"
+     if re.search(r"(?:本契約締結日|契約締結日|締結日)\s*(?:から|より)$", normalized):
+         return "anchor_only"
++    if _ENGLISH_EFFECTIVE_ANCHOR_ONLY_RE.search(normalized):
++        return "anchor_only"
+     if _RELATIVE_EFFECTIVE_TERM_RE.search(normalized):
+         return "relative_term"
+     if _PLACEHOLDER_TERM_RE.search(normalized):
+@@ -594,3 +638,139 @@ def classify_expiration_date_semantics(text: str) -> str:
+ 
+ def _semantic_flag(semantic_type: str) -> str:
+     return f"semantic_type:{semantic_type}"
++
++
++def _normalize_english_explicit_date(text: str) -> str | None:
++    normalized = normalize_digits(normalize_text(text))
++    if _ISO_DATE_RE.fullmatch(normalized):
++        return normalized
++
++    month_map = {
++        "jan": 1,
++        "january": 1,
++        "feb": 2,
++        "february": 2,
++        "mar": 3,
++        "march": 3,
++        "apr": 4,
++        "april": 4,
++        "may": 5,
++        "jun": 6,
++        "june": 6,
++        "jul": 7,
++        "july": 7,
++        "aug": 8,
++        "august": 8,
++        "sep": 9,
++        "sept": 9,
++        "september": 9,
++        "oct": 10,
++        "october": 10,
++        "nov": 11,
++        "november": 11,
++        "dec": 12,
++        "december": 12,
++    }
++
++    month_first = _ENGLISH_MONTH_DATE_RE.fullmatch(normalized)
++    if month_first is not None:
++        month = month_map[month_first.group("month").lower()]
++        day = int(month_first.group("day"))
++        year = int(month_first.group("year"))
++        try:
++            return date(year, month, day).isoformat()
++        except ValueError:
++            return None
++
++    day_first = _ENGLISH_DAY_MONTH_DATE_RE.fullmatch(normalized)
++    if day_first is not None:
++        month = month_map[day_first.group("month").lower()]
++        day = int(day_first.group("day"))
++        year = int(day_first.group("year"))
++        try:
++            return date(year, month, day).isoformat()
++        except ValueError:
++            return None
++
++    return None
++
++
++def _normalize_english_governing_law(text: str, *, reason: str | None = None) -> str | None:
++    normalized = normalize_text(text)
++    if not re.search(r"[A-Za-z]", normalized):
++        return None
++
++    direct_law_name = _normalize_english_law_name(normalized)
++    if direct_law_name is not None and _reason_indicates_governing_law_clause(reason):
++        return direct_law_name
++
++    if not _ENGLISH_GOVERNING_LAW_CONTEXT_RE.search(normalized):
++        return None
++
++    for pattern in (_ENGLISH_GOVERNING_LAW_OF_RE, _ENGLISH_GOVERNING_BARE_LAW_RE):
++        match = pattern.search(normalized)
++        if match is None:
++            continue
++        normalized_law = _normalize_english_law_name(match.group("law"))
++        if normalized_law is not None:
++            return normalized_law
++
++    return None
++
++
++def _normalize_english_law_name(text: str) -> str | None:
++    normalized = normalize_text(text).strip(" .,:;")
++    normalized = re.sub(r"\s+", " ", normalized)
++
++    if re.fullmatch(r"Japanese law", normalized, re.IGNORECASE):
++        return "日本法"
++
++    lower = normalized.lower()
++    if not (
++        lower.startswith("the laws of ")
++        or lower.startswith("laws of ")
++        or lower.startswith("the law of ")
++        or lower.startswith("law of ")
++        or lower.startswith("the internal laws of ")
++        or lower.startswith("internal laws of ")
++        or lower.startswith("the substantive laws of ")
++        or lower.startswith("substantive laws of ")
++        or lower.endswith(" law")
++    ):
++        return None
++
++    jurisdiction = normalized
++    if lower.startswith("the "):
++        jurisdiction = jurisdiction[4:]
++        lower = jurisdiction.lower()
++    if lower.startswith("internal laws of "):
++        jurisdiction = jurisdiction[len("internal laws of ") :]
++    elif lower.startswith("substantive laws of "):
++        jurisdiction = jurisdiction[len("substantive laws of ") :]
++    elif lower.startswith("laws of "):
++        jurisdiction = jurisdiction[len("laws of ") :]
++    elif lower.startswith("law of "):
++        jurisdiction = jurisdiction[len("law of ") :]
++    elif lower.endswith(" law"):
++        jurisdiction = jurisdiction[:-4]
++
++    jurisdiction = re.sub(r"^(?:the\s+)", "", jurisdiction, flags=re.IGNORECASE)
++    jurisdiction = re.split(r",\s*(?:without regard|excluding|except|provided that)\b", jurisdiction, maxsplit=1, flags=re.IGNORECASE)[0]
++    jurisdiction = jurisdiction.strip(" .,:;")
++    if not jurisdiction:
++        return None
++
++    if re.fullmatch(r"Japan|Japanese", jurisdiction, re.IGNORECASE):
++        return "日本法"
++    if re.fullmatch(r"applicable|internal|substantive", jurisdiction, re.IGNORECASE):
++        return None
++    if re.search(r"\b(?:discuss|comply|consider|facts?)\b", jurisdiction, re.IGNORECASE):
++        return None
++
++    return f"{jurisdiction} law"
++
++
++def _reason_indicates_governing_law_clause(reason: str | None) -> bool:
++    if not reason:
++        return False
++    return "governing_law" in reason
+diff --git a/tests/test_block_merger.py b/tests/test_block_merger.py
+index fa0457f..1f81b45 100644
+--- a/tests/test_block_merger.py
++++ b/tests/test_block_merger.py
+@@ -310,6 +310,18 @@ def test_classify_candidate_kind_does_not_mark_bottom_body_as_signature_without_
+     assert kind == "body"
+ 
+ 
++def test_classify_candidate_kind_keeps_english_effective_phrase_as_body() -> None:
++    kind = BlockMerger._classify_candidate_kind(
++        text="as of the date first written above",
++        bbox=BBox(20.0, 920.0, 580.0, 948.0),
++        page_height=1000.0,
++        block_type=BlockType.TEXT,
++        repeated_margin_texts=set(),
++    )
++
++    assert kind == "body"
++
++
+ def test_merger_keeps_annotation_block_separate_from_body() -> None:
+     native_result = _single_page_native_result(
+         [
+diff --git a/tests/test_field_extractor.py b/tests/test_field_extractor.py
+index 70e126c..47c5f4f 100644
+--- a/tests/test_field_extractor.py
++++ b/tests/test_field_extractor.py
+@@ -359,3 +359,91 @@ def test_field_extractor_handles_composite_governing_law_heading_pattern() -> No
+     result = extractor.extract([block])
+ 
+     assert result.fields.governing_law.value == "日本法"
++
++
++def test_field_extractor_extracts_english_governing_law_and_effective_date() -> None:
++    extractor = ContractFieldExtractor()
++    blocks = [
++        _make_block(
++            1,
++            "This Agreement shall be governed by and construed in accordance with the laws of Japan.",
++        ),
++        _make_block(
++            2,
++            "This Agreement is made and entered into as of April 1, 2025.",
++        ),
++    ]
++
++    result = extractor.extract(blocks)
++
++    assert result.fields.governing_law.value == "日本法"
++    assert result.fields.effective_date.value == "2025-04-01"
++
++
++def test_field_extractor_extracts_english_governing_law_clause_variants_beyond_japan() -> None:
++    extractor = ContractFieldExtractor()
++    new_york_blocks = [
++        _make_block(1, "This Agreement shall be governed by the laws of the State of New York."),
++    ]
++    england_blocks = [
++        _make_block(
++            1,
++            "This Agreement and any dispute arising hereunder shall be construed in accordance with the laws of England and Wales.",
++        ),
++    ]
++
++    new_york = extractor.extract(new_york_blocks)
++    england = extractor.extract(england_blocks)
++
++    assert new_york.fields.governing_law.value == "State of New York law"
++    assert england.fields.governing_law.value == "England and Wales law"
++
++
++def test_field_extractor_rejects_weak_context_english_law_mentions() -> None:
++    extractor = ContractFieldExtractor()
++    blocks = [
++        _make_block(1, "The parties will discuss the applicable law in good faith."),
++        _make_block(2, "This policy is intended to comply with applicable laws."),
++        _make_block(3, "Japanese law may apply in some cases."),
++        _make_block(4, "The court shall consider the law and facts."),
++    ]
++
++    result = extractor.extract(blocks)
++
++    assert result.fields.governing_law.value is None
++
++
++def test_field_extractor_extracts_additional_english_effective_date_absolute_pattern() -> None:
++    extractor = ContractFieldExtractor()
++    blocks = [
++        _make_block(1, "This Agreement shall be effective on and after 2025-04-01."),
++    ]
++
++    result = extractor.extract(blocks)
++
++    assert result.fields.effective_date.value == "2025-04-01"
++    assert "semantic_type:absolute" in result.fields.effective_date.flags
++
++
++def test_field_extractor_keeps_relative_english_effective_reference_without_over_normalization() -> None:
++    extractor = ContractFieldExtractor()
++    blocks = [
++        _make_block(1, "This Agreement shall be effective as of the date first written above."),
++    ]
++
++    result = extractor.extract(blocks)
++
++    assert result.fields.effective_date.value == "as of the date first written above"
++    assert "semantic_type:relative_term" in result.fields.effective_date.flags
++
++
++def test_field_extractor_keeps_last_signature_english_effective_reference_without_over_normalization() -> None:
++    extractor = ContractFieldExtractor()
++    blocks = [
++        _make_block(1, "This Agreement shall become effective on the date of last signature."),
++    ]
++
++    result = extractor.extract(blocks)
++
++    assert result.fields.effective_date.value == "on the date of last signature"
++    assert "semantic_type:relative_term" in result.fields.effective_date.flags
+diff --git a/tests/test_field_validators.py b/tests/test_field_validators.py
+index f2ba3d2..38f034c 100644
+--- a/tests/test_field_validators.py
++++ b/tests/test_field_validators.py
+@@ -28,6 +28,23 @@ def test_validate_governing_law_accepts_japanese_law_and_rejects_generic_tokens(
+     assert validate_governing_law("準拠").accepted is False
+ 
+ 
++def test_validate_governing_law_accepts_clause_level_english_and_rejects_weak_context_mentions() -> None:
++    new_york = validate_governing_law("This Agreement shall be governed by the laws of the State of New York.")
++    england = validate_governing_law(
++        "This Agreement and any dispute arising hereunder shall be construed in accordance with the laws of England and Wales."
++    )
++
++    assert new_york.accepted is True
++    assert new_york.normalized_value == "State of New York law"
++    assert england.accepted is True
++    assert england.normalized_value == "England and Wales law"
++
++    assert validate_governing_law("The parties will discuss the applicable law in good faith.").accepted is False
++    assert validate_governing_law("This policy is intended to comply with applicable laws.").accepted is False
++    assert validate_governing_law("Japanese law may apply in some cases.").accepted is False
++    assert validate_governing_law("The court shall consider the law and facts.").accepted is False
++
++
+ def test_validate_effective_date_marks_anchor_only_value() -> None:
+     result = validate_effective_date("契約締結日から")
+ 
+@@ -37,6 +54,18 @@ def test_validate_effective_date_marks_anchor_only_value() -> None:
+     assert "semantic_type:anchor_only" in result.quality_flags
+ 
+ 
++def test_validate_effective_date_classifies_english_absolute_and_anchor_only_values() -> None:
++    absolute = validate_effective_date("April 1, 2025")
++    anchor = validate_effective_date("on the execution date")
++
++    assert absolute.accepted is True
++    assert absolute.normalized_value == "2025-04-01"
++    assert "semantic_type:absolute" in absolute.quality_flags
++    assert anchor.accepted is True
++    assert anchor.anchor_only is True
++    assert "semantic_type:anchor_only" in anchor.quality_flags
++
++
+ def test_validate_date_semantic_types_cover_absolute_relative_placeholder_and_renewable() -> None:
+     assert "semantic_type:absolute" in validate_effective_date("2025-04-01").quality_flags
+     assert "semantic_type:relative_term" in validate_effective_date("本契約締結日から1年間").quality_flags
+diff --git a/tests/test_layout_filtering.py b/tests/test_layout_filtering.py
+index 73fb166..8a89a6e 100644
+--- a/tests/test_layout_filtering.py
++++ b/tests/test_layout_filtering.py
+@@ -315,3 +315,41 @@ def test_layout_repeated_header_footer_like_text_is_not_body() -> None:
+     )
+ 
+     assert role == "header_footer"
++
++
++def test_layout_keeps_english_governing_law_sentence_as_body() -> None:
++    role = LayoutAnalyzer._classify_text_role(
++        text="This Agreement shall be governed by and construed in accordance with the laws of Japan.",
++        bbox=BBox(10.0, 920.0, 580.0, 950.0),
++        page_height=1000.0,
++        repeated_margin_texts=set(),
++    )
++    inferred = infer_block_type(
++        "This Agreement shall be governed by and construed in accordance with the laws of Japan.",
++        BBox(10.0, 920.0, 580.0, 950.0),
++        page_height=1000.0,
++    )
++
++    assert role == "body"
++    assert inferred == BlockType.TEXT
++
++
++def test_layout_rescues_short_critical_tail_line_with_context() -> None:
++    role = LayoutAnalyzer._classify_text_role(
++        text="準拠法 日本法",
++        bbox=BBox(10.0, 928.0, 580.0, 948.0),
++        page_height=1000.0,
++        repeated_margin_texts=set(),
++        prev_text="本契約に関する紛争は協議により解決する。",
++        prev_bbox=BBox(10.0, 900.0, 580.0, 924.0),
++        next_text="その他は双方誠実に協議するものとする。",
++        next_bbox=BBox(10.0, 950.0, 580.0, 974.0),
++    )
++    inferred = infer_block_type(
++        "準拠法 日本法",
++        BBox(10.0, 928.0, 580.0, 948.0),
++        page_height=1000.0,
++    )
++
++    assert role == "body"
++    assert inferred == BlockType.TEXT

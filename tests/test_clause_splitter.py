@@ -221,3 +221,41 @@ def test_clause_splitter_emits_unstable_review_for_heading_only_clauses() -> Non
     result = splitter.split(blocks)
 
     assert any(issue.reason_code == ReasonCode.UNSTABLE_CLAUSE_SPLIT for issue in result.issues)
+
+
+def test_clause_splitter_separates_preamble_from_first_article_and_assigns_section_types() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "業務委託契約書"),
+        _make_block(2, "甲と乙は次のとおり契約を締結する。"),
+        _make_block(3, "第1条"),
+        _make_block(4, "（目的）"),
+        _make_block(5, "甲は乙に業務を委託する。"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) >= 2
+    assert result.clauses[0].section_type.value == "preamble"
+    assert result.clauses[0].clause_no is None
+    assert result.clauses[1].clause_no == "第1条"
+    assert result.clauses[1].section_type.value == "main_contract"
+
+
+def test_clause_splitter_separates_form_and_instruction_from_main_contract() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条（目的）本契約の目的を定める。"),
+        _make_block(2, "第2条（委託業務）乙は本業務を履行する。"),
+        _make_block(3, "別紙1 仕様書"),
+        _make_block(4, "様式第1号 請求書"),
+        _make_block(5, "記載要領 1. 記入方法"),
+    ]
+
+    result = splitter.split(blocks)
+    section_types = [clause.section_type.value for clause in result.clauses]
+
+    assert "main_contract" in section_types
+    assert "appendix" in section_types
+    assert "form" in section_types
+    assert "instruction" in section_types

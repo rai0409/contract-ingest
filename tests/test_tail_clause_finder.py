@@ -127,6 +127,28 @@ def test_tail_clause_finder_supports_governing_law_variants() -> None:
     assert all(candidate.value not in {"法", "準拠"} for candidate in candidates)
 
 
+def test_tail_clause_finder_supports_additional_japanese_governing_law_variants_and_rejects_weak_context() -> None:
+    applied_law = find_tail_governing_law_candidates(
+        [_make_block(4, 12, "第20条（適用法）本契約に適用される法は日本法とする。")],
+        route="NDA",
+    )
+    all_matters = find_tail_governing_law_candidates(
+        [_make_block(4, 13, "第21条（準拠法）本契約に関する一切の事項は日本法に従う。")],
+        route="NDA",
+    )
+    weak_context = find_tail_governing_law_candidates(
+        [
+            _make_block(4, 14, "第22条（準拠法）適用法令を遵守する。"),
+            _make_block(4, 15, "第23条（準拠法）別途協議して定める。"),
+        ],
+        route="NDA",
+    )
+
+    assert any(candidate.value == "日本法" and "適用法" in candidate.snippet for candidate in applied_law)
+    assert any(candidate.value == "日本法" and "一切の事項" in candidate.snippet for candidate in all_matters)
+    assert weak_context == []
+
+
 def test_tail_clause_finder_captures_relative_and_renewable_date_terms() -> None:
     blocks = [
         _make_block(3, 20, "第9条 本契約は契約締結日から1年間効力を有する。"),
