@@ -315,3 +315,56 @@ def test_layout_repeated_header_footer_like_text_is_not_body() -> None:
     )
 
     assert role == "header_footer"
+
+
+def test_layout_keeps_english_governing_law_sentence_as_body() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="This Agreement shall be governed by and construed in accordance with the laws of Japan.",
+        bbox=BBox(10.0, 920.0, 580.0, 950.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(
+        "This Agreement shall be governed by and construed in accordance with the laws of Japan.",
+        BBox(10.0, 920.0, 580.0, 950.0),
+        page_height=1000.0,
+    )
+
+    assert role == "body"
+    assert inferred == BlockType.TEXT
+
+
+def test_layout_rescues_short_critical_tail_line_with_context() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="準拠法 日本法",
+        bbox=BBox(10.0, 928.0, 580.0, 948.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+        prev_text="本契約に関する紛争は協議により解決する。",
+        prev_bbox=BBox(10.0, 900.0, 580.0, 924.0),
+        next_text="その他は双方誠実に協議するものとする。",
+        next_bbox=BBox(10.0, 950.0, 580.0, 974.0),
+    )
+    inferred = infer_block_type(
+        "準拠法 日本法",
+        BBox(10.0, 928.0, 580.0, 948.0),
+        page_height=1000.0,
+    )
+
+    assert role == "body"
+    assert inferred == BlockType.TEXT
+
+
+def test_layout_weak_native_regions_keep_short_japanese_legal_markers_for_ocr_request() -> None:
+    analyzer = LayoutAnalyzer()
+    blocks = [
+        _make_native_block(1, "n100", "発効", y0=900.0, y1=916.0, searchable=False),
+        _make_native_block(1, "n101", "効力", y0=918.0, y1=934.0, searchable=False),
+        _make_native_block(1, "n102", "履行", y0=936.0, y1=952.0, searchable=False),
+        _make_native_block(1, "n103", "解釈", y0=954.0, y1=970.0, searchable=False),
+    ]
+
+    regions = analyzer._weak_native_regions(blocks, page_height=1000.0, repeated_margin_texts=set())
+    region_ids = {region.source_block_id for region in regions}
+
+    assert {"n100", "n101", "n102", "n103"} <= region_ids

@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from contract_ingest.domain.enums import BlockType, ChunkType, DocumentKind, ExtractMethod, ReviewLevel
+from contract_ingest.domain.enums import BlockType, ChunkType, DocumentKind, ExtractMethod, ReviewLevel, SectionType
 
 _ALLOWED_FIELDS = {
     "contract_type",
@@ -81,6 +81,7 @@ class DocumentBlockSchema(BaseModel):
     reading_order: int = Field(ge=1)
     source_hash: str
     pipeline_version: str
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
 
 class ClauseSchema(BaseModel):
@@ -95,6 +96,7 @@ class ClauseSchema(BaseModel):
     block_ids: list[str] = Field(default_factory=list)
     evidence_refs: list[EvidenceRefSchema] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
     @model_validator(mode="after")
     def validate_page_span(self) -> "ClauseSchema":
@@ -139,6 +141,7 @@ class DocumentSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     doc_id: str
+    title: str | None = None
     source_file: str
     document_kind: DocumentKind
     pipeline_version: str
@@ -165,6 +168,7 @@ class ChunkMetadataSchema(BaseModel):
     block_ids: list[str]
     evidence_refs: list[EvidenceRefSchema]
     contract_type: str | None = None
+    section_type: SectionType
 
     @field_validator("searchable")
     @classmethod
@@ -217,6 +221,10 @@ class ReviewItemSchema(BaseModel):
     snippet: str | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     suggested_action: str | None = None
+    type: str | None = None
+    severity: str | None = None
+    evidence: dict[str, Any] | None = None
+    suggested_fix: str | None = None
 
 
 class ReviewSummarySchema(BaseModel):
@@ -224,6 +232,10 @@ class ReviewSummarySchema(BaseModel):
 
     warning_count: int = Field(ge=0)
     critical_count: int = Field(ge=0)
+    high_count: int = Field(default=0, ge=0)
+    medium_count: int = Field(default=0, ge=0)
+    low_count: int = Field(default=0, ge=0)
+    compare_ready: bool = False
 
 
 class ReviewSchema(BaseModel):

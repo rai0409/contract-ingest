@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from contract_ingest.config import get_settings
+from contract_ingest.domain.enums import ErrorSeverity, ReasonCode
 from contract_ingest.domain.models import OCRExtractionResult, ProcessingIssue
 from contract_ingest.export.write_chunks_jsonl import ChunksJsonlWriter, ChunksWriteError
 from contract_ingest.export.write_document_json import DocumentJsonWriter, DocumentWriteError
@@ -21,6 +22,7 @@ from contract_ingest.normalize.chunk_builder import ChunkBuilder
 from contract_ingest.normalize.clause_splitter import ClauseSplitter
 from contract_ingest.normalize.evidence_builder import EvidenceBuilder
 from contract_ingest.normalize.field_extractor import ContractFieldExtractor
+from contract_ingest.normalize.title_extractor import extract_document_title
 from contract_ingest.review.review_queue import ReviewQueueBuilder
 from contract_ingest.review.scorer import ReviewScorer
 from contract_ingest.utils.hash import sha256_file
@@ -126,6 +128,29 @@ def run(argv: list[str] | None = None) -> int:
 
         clause_result = clause_splitter.split(evidence_blocks)
         field_result = field_extractor.extract(evidence_blocks, clause_result.clauses)
+        title_result = extract_document_title(
+            evidence_blocks,
+            clauses=clause_result.clauses,
+            contract_type_hint=field_result.fields.contract_type.value
+            if isinstance(field_result.fields.contract_type.value, str)
+            else None,
+        )
+        title_issues: list[ProcessingIssue] = []
+        if title_result.title is None:
+            title_issues.append(
+                ProcessingIssue(
+                    severity=ErrorSeverity.REVIEW,
+                    reason_code=ReasonCode.MISSING_TITLE,
+                    message="document title is missing",
+                    page=title_result.evidence_ref.page if title_result.evidence_ref else None,
+                    block_id=title_result.evidence_ref.block_id if title_result.evidence_ref else None,
+                    details={
+                        "field_name": "title",
+                        "candidate_value": None,
+                        "why_rejected": title_result.reason,
+                    },
+                )
+            )
 
         chunk_result = chunk_builder.build(
             doc_id=doc_id,
@@ -145,6 +170,7 @@ def run(argv: list[str] | None = None) -> int:
             clause_issues=clause_result.issues,
             field_issues=field_result.issues,
             chunk_issues=chunk_result.issues,
+            title_issues=title_issues,
         )
 
         review_assessment = review_scorer.score(
@@ -157,6 +183,7 @@ def run(argv: list[str] | None = None) -> int:
         document_path = document_writer.write(
             output_dir=output_dir,
             doc_id=doc_id,
+            title=title_result.title,
             source_file=input_pdf.name,
             document_kind=classification.document_kind,
             source_hash=source_hash,
@@ -219,6 +246,7 @@ def _collect_issues(
     clause_issues: list[ProcessingIssue],
     field_issues: list[ProcessingIssue],
     chunk_issues: list[ProcessingIssue],
+    title_issues: list[ProcessingIssue] | None = None,
 ) -> list[ProcessingIssue]:
     issues = [
         *classification_warnings,
@@ -231,6 +259,7 @@ def _collect_issues(
         *clause_issues,
         *field_issues,
         *chunk_issues,
+        *(title_issues or []),
     ]
 
     deduped: list[ProcessingIssue] = []

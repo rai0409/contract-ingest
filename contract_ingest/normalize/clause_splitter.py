@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from contract_ingest.config import Settings, get_settings
-from contract_ingest.domain.enums import BlockType, ErrorSeverity, ReasonCode
+from contract_ingest.domain.enums import BlockType, ErrorSeverity, ReasonCode, SectionType
 from contract_ingest.domain.models import ClauseSplitResult, ClauseUnit, EvidenceBlock, EvidenceRef, ProcessingIssue
 from contract_ingest.utils.text import (
     is_annotation_like_text,
@@ -25,6 +25,10 @@ _APPENDIX_RE = re.compile(r"^\s*(?P<no>附則|別紙|別表)\s*(?:[（(](?P<titl
 _PAREN_TITLE_ONLY_RE = re.compile(r"^\s*[（(](?P<title>[^）)]{1,60})[）)]\s*$")
 _ITEM_ONLY_RE = re.compile(r"^\s*(?:\(?[0-9０-９]{1,2}\)?|[①-⑳])\s*$")
 _ORPHAN_FRAGMENT_HEAD_RE = re.compile(r"^\s*[のてにをがでと、，]")
+_FORM_SIGNAL_RE = re.compile(r"(?:様式第?[0-9０-９一二三四五六七八九十]*|通知書|届出書|請求書|実績報告書)")
+_INSTRUCTION_SIGNAL_RE = re.compile(r"(?:記載要領|記入要領|作成要領|取扱要領|記載例)")
+_APPENDIX_SIGNAL_RE = re.compile(r"(?:^|\s)(?:別紙|別表|別添|付属資料|仕様書)")
+_SIGNATURE_SIGNAL_RE = re.compile(r"(?:記名押印|署名欄|押印欄|甲\s*[:：]|乙\s*[:：]|住所|氏名|代表者)")
 
 
 @dataclass
@@ -34,6 +38,7 @@ class _ClauseDraft:
     text_parts: list[str] = field(default_factory=list)
     blocks: list[EvidenceBlock] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
 
 class ClauseSplitter:
@@ -59,6 +64,8 @@ class ClauseSplitter:
         expecting_title_line = False
         previous_article_number: int | None = None
         pending_next_clause_title: tuple[str, EvidenceBlock, str] | None = None
+        seen_article_heading = False
+        section_boundary_uncertain_count = 0
 
         for block in ordered:
             raw_text = str(block.text)
@@ -68,6 +75,38 @@ class ClauseSplitter:
                     continue
 
                 heading = self._detect_heading(text)
+                section_type = self._infer_section_type(
+                    text=text,
+                    heading=heading,
+                    block=block,
+                    seen_article_heading=seen_article_heading,
+                )
+                if heading is not None and heading[0].startswith("第"):
+                    seen_article_heading = True
+
+                if current is not None and current.section_type != section_type:
+                    if (
+                        pending_next_clause_title is not None
+                        and not self._is_non_clause_material(
+                            block=pending_next_clause_title[1],
+                            text=pending_next_clause_title[2],
+                            section_type=current.section_type,
+                        )
+                    ):
+                        current.blocks.append(pending_next_clause_title[1])
+                        current.text_parts.append(pending_next_clause_title[2])
+                    pending_next_clause_title = None
+                    if current.blocks:
+                        drafts.append(current)
+                    strong_boundary = self._is_strong_section_boundary_signal(text=text, section_type=section_type) or (
+                        section_type == SectionType.SIGNATURE
+                        and block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}
+                    )
+                    if not strong_boundary:
+                        section_boundary_uncertain_count += 1
+                    current = None
+                    expecting_title_line = False
+
                 if heading is not None:
                     if not self._should_start_new_clause_heading(
                         current=current,
@@ -77,14 +116,18 @@ class ClauseSplitter:
                         block=block,
                     ):
                         if current is None:
-                            current = _ClauseDraft(clause_no=None, clause_title="前文")
-                        if not self._is_non_clause_material(block=block, text=text):
+                            current = _ClauseDraft(
+                                clause_no=None,
+                                clause_title="前文" if section_type == SectionType.PREAMBLE else None,
+                                section_type=section_type,
+                            )
+                        if not self._is_non_clause_material(block=block, text=text, section_type=section_type):
                             current.blocks.append(block)
                             current.text_parts.append(text)
                         continue
                     if current is not None and current.blocks:
                         drafts.append(current)
-                    current = _ClauseDraft(clause_no=heading[0], clause_title=heading[1])
+                    current = _ClauseDraft(clause_no=heading[0], clause_title=heading[1], section_type=section_type)
                     if pending_next_clause_title is not None and current.clause_title is None:
                         pending_title, pending_block, pending_text = pending_next_clause_title
                         current.clause_title = pending_title
@@ -106,6 +149,7 @@ class ClauseSplitter:
                     if current is not None and not self._is_non_clause_material(
                         block=pending_next_clause_title[1],
                         text=pending_next_clause_title[2],
+                        section_type=current.section_type,
                     ):
                         current.blocks.append(pending_next_clause_title[1])
                         current.text_parts.append(pending_next_clause_title[2])
@@ -122,7 +166,11 @@ class ClauseSplitter:
                 expecting_title_line = False
 
                 if current is None:
-                    current = _ClauseDraft(clause_no=None, clause_title="前文")
+                    current = _ClauseDraft(
+                        clause_no=None,
+                        clause_title="前文" if section_type == SectionType.PREAMBLE else None,
+                        section_type=section_type,
+                    )
 
                 if self._is_next_clause_subtitle_candidate(current=current, block=block, text=text):
                     title = self._extract_parenthesized_title(text)
@@ -130,14 +178,18 @@ class ClauseSplitter:
                         pending_next_clause_title = (title, block, text)
                         continue
 
-                if self._is_non_clause_material(block=block, text=text):
+                if self._is_non_clause_material(block=block, text=text, section_type=current.section_type):
                     continue
 
                 current.blocks.append(block)
                 current.text_parts.append(text)
 
         if pending_next_clause_title is not None and current is not None:
-            if not self._is_non_clause_material(block=pending_next_clause_title[1], text=pending_next_clause_title[2]):
+            if not self._is_non_clause_material(
+                block=pending_next_clause_title[1],
+                text=pending_next_clause_title[2],
+                section_type=current.section_type,
+            ):
                 current.blocks.append(pending_next_clause_title[1])
                 current.text_parts.append(pending_next_clause_title[2])
         if current is not None and current.blocks:
@@ -162,11 +214,21 @@ class ClauseSplitter:
                     block_ids=block_ids,
                     evidence_refs=evidence_refs,
                     flags=list(draft.flags),
+                    section_type=draft.section_type,
                 )
             )
 
         clauses = self._postprocess_clauses(clauses)
         issues = self._evaluate_stability(clauses)
+        if section_boundary_uncertain_count > 0:
+            issues.append(
+                ProcessingIssue(
+                    severity=ErrorSeverity.REVIEW,
+                    reason_code=ReasonCode.SECTION_BOUNDARY_UNCERTAIN,
+                    message="section boundary required heuristic fallback",
+                    details={"boundary_count": section_boundary_uncertain_count},
+                )
+            )
         return ClauseSplitResult(clauses=clauses, issues=issues)
 
     @staticmethod
@@ -302,13 +364,69 @@ class ClauseSplitter:
         return title
 
     @staticmethod
-    def _is_non_clause_material(block: EvidenceBlock, text: str) -> bool:
+    def _infer_section_type(
+        text: str,
+        heading: tuple[str, str | None] | None,
+        block: EvidenceBlock,
+        seen_article_heading: bool,
+    ) -> SectionType:
+        normalized = normalize_text(text)
+        if not normalized:
+            return SectionType.MAIN_CONTRACT
+        if heading is not None and heading[0].startswith("第"):
+            return SectionType.MAIN_CONTRACT
+        if "特記事項" in normalized:
+            return SectionType.SPECIAL_PROVISIONS
+        if _APPENDIX_SIGNAL_RE.search(normalized):
+            return SectionType.APPENDIX
+        if _INSTRUCTION_SIGNAL_RE.search(normalized):
+            return SectionType.INSTRUCTION
+        if _FORM_SIGNAL_RE.search(normalized):
+            return SectionType.FORM
+        if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
+            return SectionType.SIGNATURE
+        if _SIGNATURE_SIGNAL_RE.search(normalized):
+            if any(token in normalized for token in ["記名押印", "署名", "押印欄", "住所", "氏名", "代表者"]):
+                return SectionType.SIGNATURE
+        if not seen_article_heading:
+            return SectionType.PREAMBLE
+        return SectionType.MAIN_CONTRACT
+
+    @staticmethod
+    def _is_strong_section_boundary_signal(text: str, section_type: SectionType) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        if section_type == SectionType.SPECIAL_PROVISIONS:
+            return "特記事項" in normalized
+        if section_type == SectionType.APPENDIX:
+            return bool(_APPENDIX_SIGNAL_RE.search(normalized))
+        if section_type == SectionType.FORM:
+            return bool(_FORM_SIGNAL_RE.search(normalized))
+        if section_type == SectionType.INSTRUCTION:
+            return bool(_INSTRUCTION_SIGNAL_RE.search(normalized))
+        if section_type == SectionType.SIGNATURE:
+            return bool(_SIGNATURE_SIGNAL_RE.search(normalized))
+        if section_type == SectionType.MAIN_CONTRACT:
+            return bool(re.match(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", normalized))
+        return False
+
+    @staticmethod
+    def _is_non_clause_material(
+        block: EvidenceBlock,
+        text: str,
+        section_type: SectionType = SectionType.MAIN_CONTRACT,
+    ) -> bool:
         if not text:
             return True
         if block.block_type in {BlockType.HEADER, BlockType.FOOTER}:
             return True
         if is_page_number_text(text):
             return True
+        if section_type in {SectionType.APPENDIX, SectionType.FORM, SectionType.INSTRUCTION, SectionType.SIGNATURE}:
+            if block.block_type in {BlockType.IMAGE, BlockType.TABLE}:
+                return False
+            return bool(is_annotation_like_text(text) and len(normalize_text(text)) <= 6)
         if is_annotation_like_text(text):
             return True
         if is_fragment_like_text(text) and not any(token in text for token in ["甲", "乙", "条", "項"]):
@@ -333,12 +451,16 @@ class ClauseSplitter:
             return issues
 
         short_count = 0
+        main_clause_count = 0
         heading_only_runs = 0
         low_boundary_count = 0
         previous_was_heading_only = False
         previous_number: int | None = None
 
         for clause in clauses:
+            if clause.section_type != SectionType.MAIN_CONTRACT:
+                continue
+            main_clause_count += 1
             normalized_text = normalize_text(clause.text)
             if len(normalized_text) < self.settings.min_clause_text_chars:
                 short_count += 1
@@ -370,8 +492,8 @@ class ClauseSplitter:
             if clause.clause_no in {"別紙", "別表"} and len(normalized_text) < self.settings.min_clause_text_chars:
                 clause.flags.append(ReasonCode.APPENDIX_BOUNDARY_AMBIGUOUS.value)
 
-        short_ratio = short_count / max(len(clauses), 1)
-        if short_ratio >= 0.40:
+        short_ratio = short_count / max(main_clause_count, 1)
+        if main_clause_count >= 4 and short_ratio >= 0.55:
             issues.append(
                 ProcessingIssue(
                     severity=ErrorSeverity.REVIEW,
@@ -381,7 +503,7 @@ class ClauseSplitter:
                 )
             )
 
-        if heading_only_runs > 0:
+        if heading_only_runs >= 2:
             issues.append(
                 ProcessingIssue(
                     severity=ErrorSeverity.REVIEW,
@@ -391,7 +513,7 @@ class ClauseSplitter:
                 )
             )
 
-        if low_boundary_count >= 2:
+        if low_boundary_count >= 3:
             issues.append(
                 ProcessingIssue(
                     severity=ErrorSeverity.REVIEW,
@@ -406,7 +528,7 @@ class ClauseSplitter:
             ReasonCode.CONSECUTIVE_CLAUSE_HEADINGS.value,
             ReasonCode.UNSTABLE_CLAUSE_SPLIT.value,
         }
-        if any(
+        if main_clause_count >= 3 and any(
             issue.reason_code.value in unstable_reasons
             for issue in issues
             if isinstance(issue.reason_code, ReasonCode)
@@ -427,12 +549,31 @@ class ClauseSplitter:
         result = self._attach_orphan_paragraphs(clauses)
         result = self._merge_trailing_clause_fragments(result)
         result = self._repair_reversed_clause_numbers(result)
+        result = [self._dedupe_clause_heading_prefix(clause) for clause in result]
 
         for idx in range(1, len(result)):
+            if result[idx - 1].section_type != result[idx].section_type:
+                continue
+            if result[idx].section_type != SectionType.MAIN_CONTRACT:
+                continue
             score = self._score_clause_boundary_confidence(result[idx - 1], result[idx])
             if score < 0.45 and "LOW_BOUNDARY_CONFIDENCE" not in result[idx].flags:
                 result[idx].flags.append("LOW_BOUNDARY_CONFIDENCE")
         return result
+
+    @staticmethod
+    def _dedupe_clause_heading_prefix(clause: ClauseUnit) -> ClauseUnit:
+        if not clause.clause_no:
+            return clause
+        text = normalize_text(clause.text)
+        if not text:
+            return clause
+        duplicate_prefix = f"{clause.clause_no} {clause.clause_no}"
+        if text.startswith(duplicate_prefix):
+            text = text[len(clause.clause_no) + 1 :].lstrip()
+        elif text.startswith(f"{clause.clause_no}{clause.clause_no}"):
+            text = text[len(clause.clause_no) :].lstrip()
+        return replace(clause, text=text)
 
     def _repair_reversed_clause_numbers(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
         if not clauses:
@@ -440,6 +581,9 @@ class ClauseSplitter:
         repaired: list[ClauseUnit] = [clauses[0]]
         for clause in clauses[1:]:
             prev = repaired[-1]
+            if clause.section_type != prev.section_type:
+                repaired.append(clause)
+                continue
             prev_no = parse_article_number(prev.clause_no)
             curr_no = parse_article_number(clause.clause_no)
             reversed_number = prev_no is not None and curr_no is not None and curr_no < prev_no
@@ -464,6 +608,9 @@ class ClauseSplitter:
         merged: list[ClauseUnit] = [clauses[0]]
         for clause in clauses[1:]:
             prev = merged[-1]
+            if clause.section_type != prev.section_type:
+                merged.append(clause)
+                continue
             if clause.clause_no is not None:
                 merged.append(clause)
                 continue
@@ -486,6 +633,9 @@ class ClauseSplitter:
         attached: list[ClauseUnit] = [clauses[0]]
         for clause in clauses[1:]:
             prev = attached[-1]
+            if clause.section_type != prev.section_type:
+                attached.append(clause)
+                continue
             if clause.clause_no is not None:
                 attached.append(clause)
                 continue
@@ -510,6 +660,8 @@ class ClauseSplitter:
     @staticmethod
     def _score_clause_boundary_confidence(previous: ClauseUnit, current: ClauseUnit) -> float:
         score = 0.55
+        if previous.section_type != current.section_type:
+            score -= 0.35
         prev_no = parse_article_number(previous.clause_no)
         curr_no = parse_article_number(current.clause_no)
         if prev_no is not None and curr_no is not None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contract_ingest.config import Settings, get_settings
-from contract_ingest.domain.enums import ChunkType, ErrorSeverity, ExtractMethod, ReasonCode
+from contract_ingest.domain.enums import ChunkType, ErrorSeverity, ExtractMethod, ReasonCode, SectionType
 from contract_ingest.domain.models import ClauseUnit, ContractFields, EvidenceBlock, ProcessingIssue
 from contract_ingest.utils.text import normalize_text, unique_preserve_order
 
@@ -108,6 +108,7 @@ class ChunkBuilder:
                         "block_ids": block_ids,
                         "evidence_refs": evidence_refs,
                         "contract_type": contract_type,
+                        "section_type": clause.section_type.value,
                     },
                 }
             )
@@ -144,6 +145,7 @@ class ChunkBuilder:
                         "block_ids": fallback_block_ids,
                         "evidence_refs": fallback_refs,
                         "contract_type": contract_type,
+                        "section_type": SectionType.MAIN_CONTRACT.value,
                     },
                 }
             )
@@ -161,12 +163,22 @@ class ChunkBuilder:
     def _build_chunk_text(clause: ClauseUnit) -> str:
         text = normalize_text(clause.text)
         prefix_parts = [part for part in [clause.clause_no, clause.clause_title] if part]
+        if clause.clause_no and text.startswith(f"{clause.clause_no} "):
+            prefix_parts = [part for part in [clause.clause_title] if part]
+        elif clause.clause_no and text == clause.clause_no:
+            prefix_parts = [part for part in [clause.clause_title] if part]
         if prefix_parts:
             return f"{' '.join(prefix_parts)} {text}".strip()
         return text
 
     @staticmethod
     def _resolve_chunk_type(clause: ClauseUnit) -> ChunkType:
+        if clause.section_type == SectionType.PREAMBLE:
+            return ChunkType.PREAMBLE
+        if clause.section_type in {SectionType.APPENDIX, SectionType.FORM, SectionType.INSTRUCTION}:
+            return ChunkType.APPENDIX
+        if clause.section_type == SectionType.SIGNATURE:
+            return ChunkType.OTHER
         if clause.clause_no in {"別紙", "別表"}:
             return ChunkType.APPENDIX
         if clause.clause_no == "附則":

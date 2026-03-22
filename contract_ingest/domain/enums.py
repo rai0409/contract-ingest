@@ -20,6 +20,16 @@ class BlockType(str, Enum):
     OTHER = "other"
 
 
+class SectionType(str, Enum):
+    PREAMBLE = "preamble"
+    MAIN_CONTRACT = "main_contract"
+    SPECIAL_PROVISIONS = "special_provisions"
+    APPENDIX = "appendix"
+    FORM = "form"
+    INSTRUCTION = "instruction"
+    SIGNATURE = "signature"
+
+
 class ExtractMethod(str, Enum):
     NATIVE_TEXT = "native_text"
     OCR = "ocr"
@@ -63,6 +73,9 @@ class ReasonCode(str, Enum):
     LOW_QUALITY_EXPIRATION_DATE = "LOW_QUALITY_EXPIRATION_DATE"
     TABLE_CONTENT_UNPARSED = "TABLE_CONTENT_UNPARSED"
     APPENDIX_DETECTED_NOT_PARSED = "APPENDIX_DETECTED_NOT_PARSED"
+    MISSING_TITLE = "MISSING_TITLE"
+    PARTIAL_COUNTERPARTY = "PARTIAL_COUNTERPARTY"
+    SECTION_BOUNDARY_UNCERTAIN = "SECTION_BOUNDARY_UNCERTAIN"
 
 
 class ChunkType(str, Enum):

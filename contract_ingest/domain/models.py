@@ -12,6 +12,7 @@ from contract_ingest.domain.enums import (
     ExtractMethod,
     ReasonCode,
     ReviewLevel,
+    SectionType,
 )
 
 
@@ -199,6 +200,7 @@ class UnifiedBlock:
     reading_order: int
     source_block_ids: list[str]
     adoption_reason: str
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
 
 @dataclass(frozen=True)
@@ -241,6 +243,7 @@ class EvidenceBlock:
     reading_order: int
     source_hash: str
     pipeline_version: str
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,7 @@ class ClauseUnit:
     block_ids: list[str]
     evidence_refs: list[EvidenceRef]
     flags: list[str] = field(default_factory=list)
+    section_type: SectionType = SectionType.MAIN_CONTRACT
 
 
 @dataclass(frozen=True)

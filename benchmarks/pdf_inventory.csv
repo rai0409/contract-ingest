@@ -1,0 +1,8 @@
+pdf_file,doc_type,benchmark_role,governing_law_expected,jurisdiction_expected,counterparties_expected,effective_date_expected,confidence,notes
+2-4himitsuhozikeiyakusyo.pdf,秘密保持,"counterparty_partial_accept_check;governing_law_positive",present,explicit,one_side_only,absent,high,"第12条=日本国法、第13条=那覇地方裁判所。開始日型effective_dateは見えない"
+210402_himitsuhoji.pdf,秘密保持,"ocr_anomaly_check;upstream_investigation;invalid_effective_date",unknown,unknown_or_fragment_risk,unclear,invalid_or_ocr_anomaly,medium_high,"第9条=本契約締結日から○年間、第10条=東京・大阪地方裁判所。0年間異常値確認用"
+4_keiyakusyo.pdf,業務委託,"governing_law_negative;relative_jurisdiction;one_side_template",absent,relative_or_absent,one_side_only,anchor_only,high,"甲所在地管轄型、乙側空欄、準拠法条項なし"
+gyoumu-k230101.pdf,業務委託,"governing_law_negative;explicit_jurisdiction;placeholder_signature_date",absent,explicit,one_side_only,placeholder,high,"規程/協議型、福岡地方裁判所、準拠法条項なし"
+nda_hinagata_2020.pdf,NDA雛形,"governing_law_negative;explicit_jurisdiction;signature_placeholder;period_clause_check",absent,explicit,both,placeholder,high,"東京地方裁判所、締結日placeholder、準拠法条項なし"
+100956177.pdf,秘密保持/NDA系テンプレート,"governing_law_negative;explicit_jurisdiction;relative_term_check",absent,explicit,both,relative_or_placeholder,medium_high,"本契約締結日から○年間、東京・大阪地方裁判所、準拠法条項は確認範囲で見当たらず"
+87fce848a7e69c3313d672d762f09317_1.pdf,業務委託,"governing_law_negative;template_blank_counterparty;personal_info_clause",absent,absent,one_side_only_or_blank,placeholder,medium,"規定による/協議型、乙側空欄テンプレート"

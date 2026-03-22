@@ -298,10 +298,31 @@ def test_can_merge_body_rejects_annotation_signature_header_and_short_ocr_noise(
     assert BlockMerger._can_merge_body(prev, footer_type_mismatch) is False
 
 
+def test_low_value_ocr_fragment_rejects_entity_type_only_and_zero_length_noise_but_keeps_legal_markers() -> None:
+    assert BlockMerger._is_low_value_ocr_fragment("0年間", 0.99) is True
+    assert BlockMerger._is_low_value_ocr_fragment("O年間", 0.99) is True
+    assert BlockMerger._is_low_value_ocr_fragment("公益財団法人", 0.99) is True
+    assert BlockMerger._is_low_value_ocr_fragment("国立大学法人", 0.99) is True
+    assert BlockMerger._is_low_value_ocr_fragment("日本法", 0.99) is False
+    assert BlockMerger._is_low_value_ocr_fragment("契約締結日", 0.99) is False
+
+
 def test_classify_candidate_kind_does_not_mark_bottom_body_as_signature_without_composite_cues() -> None:
     kind = BlockMerger._classify_candidate_kind(
         text="代表者は本契約に基づく通知を受領し相手方へ連絡するものとする。",
         bbox=BBox(20.0, 760.0, 580.0, 810.0),
+        page_height=1000.0,
+        block_type=BlockType.TEXT,
+        repeated_margin_texts=set(),
+    )
+
+    assert kind == "body"
+
+
+def test_classify_candidate_kind_keeps_english_effective_phrase_as_body() -> None:
+    kind = BlockMerger._classify_candidate_kind(
+        text="as of the date first written above",
+        bbox=BBox(20.0, 920.0, 580.0, 948.0),
         page_height=1000.0,
         block_type=BlockType.TEXT,
         repeated_margin_texts=set(),
@@ -378,3 +399,20 @@ def test_merger_does_not_merge_body_with_close_footer_like_block() -> None:
     assert len(merged.blocks) == 2
     assert merged.blocks[0].block_type == BlockType.TEXT
     assert merged.blocks[1].block_type == BlockType.FOOTER
+
+
+def test_merger_does_not_merge_main_body_with_appendix_heading_even_when_geometry_close() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "第8条 本契約の条件を定める。", x0=20.0, y0=520.0, x1=560.0, y1=544.0),
+            _native_block("p1_n002", "別紙1 仕様書", x0=21.0, y0=546.0, x1=560.0, y1=570.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+
+    assert len(merged.blocks) == 2
+    assert merged.blocks[0].section_type.value == "main_contract"
+    assert merged.blocks[1].section_type.value == "appendix"

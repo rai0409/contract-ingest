@@ -264,6 +264,9 @@ class ReviewScorer:
             ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value,
             ReasonCode.TABLE_CONTENT_UNPARSED.value,
             ReasonCode.APPENDIX_DETECTED_NOT_PARSED.value,
+            ReasonCode.MISSING_TITLE.value,
+            ReasonCode.PARTIAL_COUNTERPARTY.value,
+            ReasonCode.SECTION_BOUNDARY_UNCERTAIN.value,
         }:
             return ReviewLevel.WARNING
         return ReviewLevel.INFO
@@ -288,6 +291,9 @@ class ReviewScorer:
             ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value: 0.50,
             ReasonCode.TABLE_CONTENT_UNPARSED.value: 0.45,
             ReasonCode.APPENDIX_DETECTED_NOT_PARSED.value: 0.42,
+            ReasonCode.MISSING_TITLE.value: 0.68,
+            ReasonCode.PARTIAL_COUNTERPARTY.value: 0.66,
+            ReasonCode.SECTION_BOUNDARY_UNCERTAIN.value: 0.72,
         }
         return score_map.get(reason_code, 0.30)
 
@@ -311,6 +317,9 @@ class ReviewScorer:
             ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value: "効力発生日が締結日アンカー表現のみです。",
             ReasonCode.TABLE_CONTENT_UNPARSED.value: "表形式の内容が未構造化です。",
             ReasonCode.APPENDIX_DETECTED_NOT_PARSED.value: "別紙・付属資料が検出されましたが未解析です。",
+            ReasonCode.MISSING_TITLE.value: "文書タイトルを抽出できませんでした。",
+            ReasonCode.PARTIAL_COUNTERPARTY.value: "当事者候補に部分断片が含まれています。",
+            ReasonCode.SECTION_BOUNDARY_UNCERTAIN.value: "セクション境界の判定が不安定です。",
         }
         return message_map.get(reason_code, "確認が必要な抽出シグナルがあります。")
 
@@ -334,5 +343,8 @@ class ReviewScorer:
             ReasonCode.ANCHOR_ONLY_EFFECTIVE_DATE.value: "締結日アンカーのため実日付が必要か確認してください。",
             ReasonCode.TABLE_CONTENT_UNPARSED.value: "表の主要セルを手入力で補完してください。",
             ReasonCode.APPENDIX_DETECTED_NOT_PARSED.value: "別紙・付属資料の必要項目を確認して補完してください。",
+            ReasonCode.MISSING_TITLE.value: "表紙上部の契約名を確認しタイトルを補完してください。",
+            ReasonCode.PARTIAL_COUNTERPARTY.value: "当事者候補から断片を除外し法人名を確定してください。",
+            ReasonCode.SECTION_BOUNDARY_UNCERTAIN.value: "前文・本文・別紙・様式の境界を確認してください。",
         }
         return hint_map.get(reason_code, "該当箇所を確認してください。")

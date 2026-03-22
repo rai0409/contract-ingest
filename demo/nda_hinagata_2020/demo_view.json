@@ -1,0 +1,167 @@
+{
+  "source_file": "nda_hinagata_2020.pdf",
+  "effective_date": {
+    "field_name": "effective_date",
+    "value": "令和○○年○○月○○日",
+    "confidence": 0.62,
+    "reason": "matched_effective_date_period_clause_fallback",
+    "evidence_refs": [
+      {
+        "page": 3,
+        "block_id": "p3_b003",
+        "bbox": {
+          "x0": 85.08000183105469,
+          "y0": 141.15956115722656,
+          "x1": 510.46209716796875,
+          "y1": 151.71994018554688
+        },
+        "confidence": null,
+        "engine": "native_text"
+      }
+    ],
+    "flags": [
+      "period_clause_fallback",
+      "text_date",
+      "placeholder_date",
+      "semantic_type:placeholder_term"
+    ],
+    "quality": {
+      "semantic_type": "placeholder_term"
+    }
+  },
+  "governing_law": {
+    "field_name": "governing_law",
+    "value": null,
+    "confidence": null,
+    "reason": "rule_no_match_governing_law",
+    "evidence_refs": [],
+    "flags": [
+      "MISSING_GOVERNING_LAW"
+    ],
+    "quality": null
+  },
+  "jurisdiction": {
+    "field_name": "jurisdiction",
+    "value": "東京地方裁判所",
+    "confidence": 0.84,
+    "reason": "rule_no_match_jurisdiction;finder:tail_clause_jurisdiction_span",
+    "evidence_refs": [
+      {
+        "page": 4,
+        "block_id": "p4_b002",
+        "bbox": {
+          "x0": 108.08000183105469,
+          "y0": 126.15956115722656,
+          "x1": 286.0800018310547,
+          "y1": 154.15956115722656
+        },
+        "confidence": 0.999859631061554,
+        "engine": "paddleocr"
+      }
+    ],
+    "flags": [
+      "MISSING_JURISDICTION",
+      "tail_jurisdiction_finder",
+      "finder_supplemented"
+    ],
+    "quality": null
+  },
+  "counterparties": {
+    "field_name": "counterparties",
+    "value": [
+      "国立研究開発法人産業技術総合研究所",
+      "○○株式会社"
+    ],
+    "confidence": 0.9,
+    "reason": "matched_party_role_japanese_rule;finder_supplemented_counterparty",
+    "evidence_refs": [
+      {
+        "page": 1,
+        "block_id": "p1_b003",
+        "bbox": {
+          "x0": 85.08000183105469,
+          "y0": 143.9195556640625,
+          "x1": 510.45196533203125,
+          "y1": 226.4799346923828
+        },
+        "confidence": null,
+        "engine": "native_text"
+      }
+    ],
+    "flags": [
+      "finder_counterparty_supplemented"
+    ],
+    "quality": null
+  },
+  "warnings": [
+    {
+      "severity": "review",
+      "reason_code": "PDF_CLASSIFICATION_AMBIGUOUS",
+      "message": "document contains mixed page kinds and is treated as hybrid",
+      "page": null,
+      "block_id": null,
+      "details": {}
+    },
+    {
+      "severity": "review",
+      "reason_code": "LOW_QUALITY_EXPIRATION_DATE",
+      "message": "expiration_date candidate is low quality",
+      "page": 3,
+      "block_id": "p3_b002",
+      "details": {
+        "field_name": "expiration_date",
+        "candidate_value": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+        "why_rejected": "validated_expiration_date_placeholder",
+        "confidence": 0.62,
+        "quality_flags": [
+          "text_date",
+          "placeholder_date",
+          "semantic_type:placeholder_term"
+        ],
+        "anchor_only": false,
+        "semantic_type": "placeholder_term",
+        "relative_jurisdiction_expression": null,
+        "bbox": {
+          "x0": 85.08000183105469,
+          "y0": 123.15956115722656,
+          "x1": 153.40562438964844,
+          "y1": 133.71994018554688
+        },
+        "snippet": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで"
+      }
+    },
+    {
+      "severity": "review",
+      "reason_code": "MISSING_GOVERNING_LAW",
+      "message": "required field is missing: governing_law",
+      "page": null,
+      "block_id": null,
+      "details": {
+        "field_name": "governing_law"
+      }
+    },
+    {
+      "severity": "review",
+      "reason_code": "LOW_CONFIDENCE",
+      "message": "low confidence field: effective_date",
+      "page": null,
+      "block_id": null,
+      "details": {
+        "confidence": 0.62,
+        "field_name": "effective_date"
+      }
+    },
+    {
+      "severity": "review",
+      "reason_code": "LOW_CONFIDENCE",
+      "message": "low confidence field: expiration_date",
+      "page": null,
+      "block_id": null,
+      "details": {
+        "confidence": 0.62,
+        "field_name": "expiration_date"
+      }
+    }
+  ],
+  "errors": []
+}

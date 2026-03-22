@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Any
 
 from contract_ingest.config import Settings, get_settings
-from contract_ingest.domain.enums import BlockType, ErrorSeverity, ExtractMethod, ReasonCode
+from contract_ingest.domain.enums import BlockType, ErrorSeverity, ExtractMethod, ReasonCode, SectionType
 from contract_ingest.domain.models import (
     BBox,
     LayoutAnalysisResult,
@@ -24,7 +25,21 @@ from contract_ingest.utils.text import (
     is_noise_text,
     is_page_number_text,
     normalize_text,
+    parse_article_number,
 )
+
+_ENTITY_TYPE_ONLY_OCR_FRAGMENTS = {
+    "株式会社",
+    "合同会社",
+    "有限会社",
+    "公益財団法人",
+    "一般社団法人",
+    "国立大学法人",
+    "学校法人",
+}
+
+_FORM_SECTION_RE = re.compile(r"(?:^|\s)(?:様式第?[0-9０-９一二三四五六七八九十]+|通知書|届出書|請求書|実績報告書)")
+_INSTRUCTION_SECTION_RE = re.compile(r"(?:記載要領|記入要領|作成要領|取扱要領|記載例)")
 
 
 class BlockMerger:
@@ -133,6 +148,11 @@ class BlockMerger:
                                     "source_block_ids": [block.block_id, ocr_block.block_id],
                                     "adoption_reason": "ocr_replaced_weak_native",
                                     "candidate_kind": ocr_kind,
+                                    "section_type": self._infer_section_type(
+                                        text=ocr_block.text,
+                                        block_type=ocr_block.block_type,
+                                        candidate_kind=ocr_kind,
+                                    ),
                                 }
                             )
                         continue
@@ -178,6 +198,11 @@ class BlockMerger:
                         "source_block_ids": [block.block_id],
                         "adoption_reason": adoption_reason,
                         "candidate_kind": native_kind,
+                        "section_type": self._infer_section_type(
+                            text=block.text,
+                            block_type=block.block_type,
+                            candidate_kind=native_kind,
+                        ),
                     }
                 )
 
@@ -212,6 +237,11 @@ class BlockMerger:
                             "source_block_ids": [ocr_block.block_id],
                             "adoption_reason": "ocr_region_added",
                             "candidate_kind": ocr_kind,
+                            "section_type": self._infer_section_type(
+                                text=ocr_block.text,
+                                block_type=ocr_block.block_type,
+                                candidate_kind=ocr_kind,
+                            ),
                         }
                     )
 
@@ -288,6 +318,7 @@ class BlockMerger:
                     reading_order=global_reading_order,
                     source_block_ids=list(candidate["source_block_ids"]),
                     adoption_reason=str(candidate["adoption_reason"]),
+                    section_type=candidate.get("section_type", SectionType.MAIN_CONTRACT),
                 )
                 merged_blocks.append(unified)
                 global_reading_order += 1
@@ -411,6 +442,8 @@ class BlockMerger:
             repeated_margin_texts=repeated_margin_texts,
         ):
             return "header_footer"
+        if BlockMerger._is_short_critical_clause_text(normalized):
+            return "body"
         if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
             return "table"
         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
@@ -447,8 +480,16 @@ class BlockMerger:
             curr_kind = candidate.get("candidate_kind")
             can_merge = False
             merged_kind = "body"
+            if previous.get("section_type", SectionType.MAIN_CONTRACT) != candidate.get(
+                "section_type",
+                SectionType.MAIN_CONTRACT,
+            ):
+                merged.append(candidate)
+                continue
             if prev_kind == "body" and curr_kind == "body":
                 can_merge = self._can_merge_body(previous, candidate)
+                if can_merge and self._crosses_article_boundary(previous["text"], candidate["text"]):
+                    can_merge = False
                 merged_kind = "body"
             elif prev_kind == "appendix" and curr_kind == "appendix":
                 can_merge = self._can_merge_appendix(previous, candidate)
@@ -470,6 +511,7 @@ class BlockMerger:
                 "source_block_ids": combined_source_ids,
                 "adoption_reason": f"{previous['adoption_reason']}+body_compatible_merge",
                 "candidate_kind": merged_kind,
+                "section_type": previous.get("section_type", SectionType.MAIN_CONTRACT),
             }
         return merged
 
@@ -497,7 +539,23 @@ class BlockMerger:
             return False
         if BlockMerger._is_appendix_like_text(prev_text) or BlockMerger._is_appendix_like_text(curr_text):
             return False
-        low_value_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
+        low_value_markers = (
+            "契約",
+            "条",
+            "法",
+            "裁判所",
+            "甲",
+            "乙",
+            "株式会社",
+            "合意",
+            "準拠",
+            "適用法",
+            "日本法",
+            "契約締結日",
+            "法人",
+            "大学",
+            "研究所",
+        )
         if previous["extract_method"] == ExtractMethod.OCR and len(prev_text) <= 10:
             if not any(marker in prev_text for marker in low_value_markers):
                 return False
@@ -505,14 +563,22 @@ class BlockMerger:
             if not any(marker in curr_text for marker in low_value_markers):
                 return False
         if len(prev_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(prev_text):
-            if not any(marker in prev_text for marker in low_value_markers):
+            if not any(marker in prev_text for marker in low_value_markers) and not BlockMerger._is_short_critical_clause_text(prev_text):
                 return False
         if len(curr_text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(curr_text):
-            if not any(marker in curr_text for marker in low_value_markers):
+            if not any(marker in curr_text for marker in low_value_markers) and not BlockMerger._is_short_critical_clause_text(curr_text):
                 return False
-        if is_fragment_like_text(prev_text) and len(prev_text) <= 12:
+        if (
+            is_fragment_like_text(prev_text)
+            and len(prev_text) <= 12
+            and not BlockMerger._is_short_critical_clause_text(prev_text)
+        ):
             return False
-        if is_fragment_like_text(curr_text) and len(curr_text) <= 12:
+        if (
+            is_fragment_like_text(curr_text)
+            and len(curr_text) <= 12
+            and not BlockMerger._is_short_critical_clause_text(curr_text)
+        ):
             return False
 
         prev_bbox = previous["bbox"]
@@ -576,6 +642,45 @@ class BlockMerger:
         return min(lhs, rhs)
 
     @staticmethod
+    def _crosses_article_boundary(previous_text: str, current_text: str) -> bool:
+        prev_article = BlockMerger._extract_article_no(previous_text)
+        curr_article = BlockMerger._extract_article_no(current_text)
+        if prev_article is None or curr_article is None:
+            return False
+        return prev_article != curr_article
+
+    @staticmethod
+    def _extract_article_no(text: str) -> int | None:
+        normalized = normalize_text(text)
+        if not normalized:
+            return None
+        match = re.match(r"^\s*(第[0-9０-９一二三四五六七八九十百千〇零]+条)", normalized)
+        if not match:
+            return None
+        return parse_article_number(match.group(1))
+
+    @staticmethod
+    def _infer_section_type(text: str, block_type: BlockType, candidate_kind: str) -> SectionType:
+        normalized = normalize_text(text)
+        if block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA} or candidate_kind == "signature":
+            return SectionType.SIGNATURE
+        if not normalized:
+            return SectionType.MAIN_CONTRACT
+        if "特記事項" in normalized:
+            return SectionType.SPECIAL_PROVISIONS
+        if LayoutAnalyzer._is_appendix_heading(normalized) or BlockMerger._is_appendix_like_text(normalized):
+            return SectionType.APPENDIX
+        if _INSTRUCTION_SECTION_RE.search(normalized):
+            return SectionType.INSTRUCTION
+        if _FORM_SECTION_RE.search(normalized):
+            return SectionType.FORM
+        signature_markers = ("契約締結日", "記名押印", "署名欄", "押印欄", "甲", "乙", "代表者", "氏名", "住所")
+        if len(normalized) <= 56 and any(marker in normalized for marker in signature_markers):
+            if any(token in normalized for token in ["記名押印", "署名", "押印", "住所", "氏名", "代表者"]):
+                return SectionType.SIGNATURE
+        return SectionType.MAIN_CONTRACT
+
+    @staticmethod
     def _is_low_value_ocr_fragment(text: str, confidence: float | None) -> bool:
         normalized = normalize_text(text)
         if not normalized:
@@ -584,9 +689,13 @@ class BlockMerger:
             return False
         if normalized in {"甲", "乙"}:
             return False
+        if BlockMerger._is_entity_type_only_ocr_fragment(normalized):
+            return True
         if is_annotation_like_text(normalized):
             return True
         if len(normalized) <= 2:
+            return True
+        if re.search(r"[0０OoＯ]+\s*(?:日間?|週間?|か月|ヶ月|ヵ月|年(?:間)?)", normalized):
             return True
         if len(normalized) <= 4 and not any(token in normalized for token in ["甲", "乙", "第", "条", "法"]):
             return True
@@ -594,7 +703,20 @@ class BlockMerger:
             return True
         if confidence is not None and confidence < 0.55:
             return True
-        legal_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社")
+        legal_markers = (
+            "契約",
+            "条",
+            "法",
+            "裁判所",
+            "甲",
+            "乙",
+            "株式会社",
+            "日本法",
+            "契約締結日",
+            "法人",
+            "大学",
+            "研究所",
+        )
         if len(normalized) <= 8 and confidence is not None and confidence < 0.70:
             if not any(marker in normalized for marker in legal_markers):
                 return True
@@ -609,3 +731,51 @@ class BlockMerger:
             return True
         appendix_markers = ("別紙", "別表", "別添", "付属資料", "仕様書")
         return len(normalized) <= 24 and any(marker in normalized for marker in appendix_markers)
+
+    @staticmethod
+    def _is_short_critical_clause_text(text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        compact = normalize_text(normalized).replace(" ", "")
+        if len(compact) > 36:
+            return False
+        if any(token in compact for token in ["記名押印", "署名欄", "代表者", "氏名", "住所", "㊞"]):
+            return False
+        japanese_markers = (
+            "準拠法",
+            "適用法",
+            "日本法",
+            "日本国法",
+            "管轄",
+            "裁判所",
+            "契約締結日",
+            "効力発生日",
+            "発効日",
+            "発効",
+            "効力",
+            "履行",
+            "解釈",
+        )
+        if any(marker in compact for marker in japanese_markers):
+            return True
+        lower = normalized.lower()
+        english_phrases = (
+            "governed by",
+            "laws of",
+            "effective date",
+            "effective as of",
+            "entered into as of",
+            "dated as of",
+            "from and after",
+            "on and after",
+            "execution date",
+            "date of execution",
+            "date first written above",
+            "date of last signature",
+        )
+        return any(phrase in lower for phrase in english_phrases)
+
+    @staticmethod
+    def _is_entity_type_only_ocr_fragment(text: str) -> bool:
+        return normalize_text(text) in _ENTITY_TYPE_ONLY_OCR_FRAGMENTS

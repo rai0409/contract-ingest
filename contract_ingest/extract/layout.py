@@ -329,6 +329,8 @@ class LayoutAnalyzer:
             next_bbox=next_bbox,
         ):
             return "body"
+        if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
+            return "body"
         if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
             return "body"
         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
@@ -367,6 +369,25 @@ class LayoutAnalyzer:
         if len(text) >= 14 and particles >= 2 and hiragana_count >= 3:
             return True
         if len(text) >= 16 and hiragana_count >= 5:
+            return True
+        lower_text = text.lower()
+        english_words = re.findall(r"[a-z]+", lower_text)
+        english_markers = (
+            "agreement",
+            "governed",
+            "effective",
+            "execution",
+            "signature",
+            "date",
+            "laws",
+            "jurisdiction",
+            "construed",
+            "entered",
+            "commencing",
+        )
+        if len(english_words) >= 4 and any(marker in lower_text for marker in english_markers):
+            return True
+        if len(english_words) >= 6 and lower_text.endswith((".", ";")):
             return True
         return len(text) >= 24 and hiragana_count >= 3
 
@@ -457,7 +478,8 @@ class LayoutAnalyzer:
         next_text: str | None,
         next_bbox: BBox | None,
     ) -> bool:
-        if len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text):
+        is_short_critical = LayoutAnalyzer._looks_like_short_critical_clause_line(text)
+        if not is_short_critical and (len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text)):
             return False
 
         def _compatible_neighbor(candidate_text: str | None, candidate_bbox: BBox | None, gap: float) -> bool:
@@ -469,9 +491,11 @@ class LayoutAnalyzer:
             if is_page_number_text(candidate) or is_annotation_like_text(candidate):
                 return False
             if LayoutAnalyzer._is_low_value_fragment_text(candidate):
-                return False
+                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
+                    return False
             if len(candidate) < 10 and not LayoutAnalyzer._looks_like_sentence_text(candidate):
-                return False
+                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
+                    return False
             min_width = min(bbox.width, candidate_bbox.width)
             max_width = max(bbox.width, candidate_bbox.width, 1.0)
             width_ratio = min_width / max_width
@@ -487,8 +511,54 @@ class LayoutAnalyzer:
             return True
         if prev_ok or next_ok:
             near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
-            return near_margin or len(text) >= 18
+            return near_margin or len(text) >= 18 or is_short_critical
         return False
+
+    @staticmethod
+    def _looks_like_short_critical_clause_line(text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        compact = re.sub(r"\s+", "", normalized)
+        if len(compact) > 36:
+            return False
+        if is_annotation_like_text(compact) or is_page_number_text(compact):
+            return False
+        if any(token in compact for token in ["記名押印", "署名欄", "代表者", "氏名", "住所", "㊞"]):
+            return False
+        japanese_markers = (
+            "準拠法",
+            "適用法",
+            "日本法",
+            "日本国法",
+            "管轄",
+            "裁判所",
+            "契約締結日",
+            "効力発生日",
+            "発効日",
+            "発効",
+            "効力",
+            "履行",
+            "解釈",
+        )
+        if any(marker in compact for marker in japanese_markers):
+            return True
+        lower = normalized.lower()
+        english_phrases = (
+            "governed by",
+            "laws of",
+            "effective date",
+            "effective as of",
+            "entered into as of",
+            "dated as of",
+            "from and after",
+            "on and after",
+            "execution date",
+            "date of execution",
+            "date first written above",
+            "date of last signature",
+        )
+        return any(phrase in lower for phrase in english_phrases)
 
     @staticmethod
     def _is_low_value_fragment_text(text: str) -> bool:
@@ -498,7 +568,24 @@ class LayoutAnalyzer:
             return False
         if text in {"甲", "乙"}:
             return False
-        legal_markers = ("契約", "条", "法", "裁判所", "甲", "乙", "株式会社", "合意", "準拠")
+        legal_markers = (
+            "契約",
+            "条",
+            "法",
+            "裁判所",
+            "甲",
+            "乙",
+            "株式会社",
+            "合意",
+            "準拠",
+            "適用法",
+            "日本法",
+            "契約締結日",
+            "発効",
+            "効力",
+            "履行",
+            "解釈",
+        )
         has_legal_marker = any(marker in text for marker in legal_markers)
         symbol_like = sum(1 for ch in text if ch in "[]{}<>|/\\*#@")
         ascii_alnum = sum(1 for ch in text if ch.isascii() and ch.isalnum())
@@ -625,6 +712,8 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
     if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
         return BlockType.OTHER
     if LayoutAnalyzer._is_appendix_heading(normalized):
+        return BlockType.TEXT
+    if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
         return BlockType.TEXT
     if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
         return BlockType.TEXT

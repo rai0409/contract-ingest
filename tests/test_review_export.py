@@ -92,6 +92,10 @@ def test_review_queue_keeps_reason_codes_and_rejection_context() -> None:
     assert item["candidate_value"] == "番の専属的合意管轄裁判所"
     assert item["why_rejected"] == "broken_jurisdiction_fragment"
     assert item["suggested_action"] is not None
+    assert item["type"] == ReasonCode.LOW_QUALITY_JURISDICTION.value
+    assert item["severity"] in {"high", "medium", "low"}
+    assert isinstance(item["evidence"], dict)
+    assert item["suggested_fix"] == item["suggested_action"]
 
 
 def test_review_json_writer_accepts_reason_codes_and_legacy_code_shape(tmp_path) -> None:
@@ -116,6 +120,7 @@ def test_review_json_writer_accepts_reason_codes_and_legacy_code_shape(tmp_path)
     data = json.loads(output.read_text(encoding="utf-8"))
 
     assert data["items"][0]["reason_codes"] == [ReasonCode.LOW_QUALITY_COUNTERPARTY.value]
+    assert "compare_ready" in data["summary"]
 
 
 def test_document_writer_field_dict_contains_optional_quality_info() -> None:
