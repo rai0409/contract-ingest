@@ -53,6 +53,22 @@ _ENGLISH_MONTH_DATE_TOKEN_PATTERN = (
     r"|\d{1,2}\s+(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|"
     r"Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{4})"
 )
+_MISSING_REASON_FLAG_BY_FIELD = {
+    "contract_type": ReasonCode.MISSING_CONTRACT_TYPE.value,
+    "effective_date": ReasonCode.MISSING_EFFECTIVE_DATE.value,
+    "expiration_date": ReasonCode.MISSING_EXPIRATION_DATE.value,
+    "governing_law": ReasonCode.MISSING_GOVERNING_LAW.value,
+    "jurisdiction": ReasonCode.MISSING_JURISDICTION.value,
+}
+_GOVERNING_LAW_EXPLICIT_SIGNAL_RE = re.compile(
+    r"(?:準拠法|適用法(?!令)|日本法|日本国法|governing\s+law|governed\s+by|laws?\s+of)",
+    re.IGNORECASE,
+)
+_GOVERNING_LAW_SOURCE_ABSENT_CONTEXT_RE = re.compile(
+    r"(?:合意管轄|管轄裁判所|第一審|地方裁判所|簡易裁判所|高等裁判所|家庭裁判所|紛争|訴え)",
+)
+_GENERIC_DATE_PLACEHOLDER_RE = re.compile(r"(?:[○◯〇]*\s*年\s*[○◯〇]*\s*月\s*[○◯〇]*\s*日|年\s*月\s*日)")
+_PARTY_PLACEHOLDER_NAME_RE = re.compile(r"^[□■◻◼○◯〇]+$")
 
 
 class ContractFieldExtractor:
@@ -168,6 +184,13 @@ class ContractFieldExtractor:
             issues=jurisdiction_issues,
             relative_expression=relative_jurisdiction,
         )
+        governing_law = self._normalize_resolved_field_state(governing_law)
+        jurisdiction = self._normalize_resolved_field_state(jurisdiction)
+        governing_law = self._mark_governing_law_source_absence(
+            field=governing_law,
+            blocks=ordered_blocks,
+            clauses=clauses,
+        )
         issues.extend(counterparties_issues)
         issues.extend(effective_date_issues)
         issues.extend(expiration_date_issues)
@@ -202,7 +225,7 @@ class ContractFieldExtractor:
                         severity=ErrorSeverity.REVIEW,
                         reason_code=reason,
                         message=f"required field is missing: {field.field_name}",
-                        details={"field_name": field.field_name},
+                        details=self._missing_issue_details(field=field, reason=reason),
                     )
                 )
 
@@ -241,6 +264,92 @@ class ContractFieldExtractor:
     @staticmethod
     def _has_effective_date_anchor(field: ExtractedField) -> bool:
         return field.reason == "matched_effective_date_anchor_rule" or "anchor_only_effective_date" in field.flags
+
+    @staticmethod
+    def _strip_missing_reason_flags(field_name: str, flags: list[str]) -> list[str]:
+        missing_flag = _MISSING_REASON_FLAG_BY_FIELD.get(field_name)
+        if missing_flag is None:
+            return list(flags)
+        return [flag for flag in flags if flag != missing_flag]
+
+    def _normalize_resolved_field_state(self, field: ExtractedField) -> ExtractedField:
+        if field.value is None:
+            return field
+        cleaned_flags = self._strip_missing_reason_flags(field.field_name, list(field.flags))
+        if field.field_name == "governing_law":
+            cleaned_flags = [flag for flag in cleaned_flags if flag != "source_not_explicit_governing_law"]
+        if cleaned_flags == list(field.flags):
+            return field
+        return ExtractedField(
+            field_name=field.field_name,
+            value=field.value,
+            confidence=field.confidence,
+            reason=field.reason,
+            evidence_refs=field.evidence_refs,
+            flags=cleaned_flags,
+        )
+
+    @staticmethod
+    def _missing_issue_details(field: ExtractedField, reason: ReasonCode) -> dict[str, str | bool]:
+        details: dict[str, str | bool] = {"field_name": field.field_name}
+        if (
+            reason == ReasonCode.MISSING_GOVERNING_LAW
+            and "source_not_explicit_governing_law" in field.flags
+        ):
+            details["why_rejected"] = "source_not_explicit_governing_law"
+            details["source_absent"] = True
+        return details
+
+    def _mark_governing_law_source_absence(
+        self,
+        field: ExtractedField,
+        blocks: list[EvidenceBlock],
+        clauses: list[ClauseUnit] | None,
+    ) -> ExtractedField:
+        if field.field_name != "governing_law" or field.value is not None:
+            return field
+        if not field.reason.startswith("rule_no_match_governing_law"):
+            return field
+        if not self._governing_law_not_explicit_in_source(blocks=blocks, clauses=clauses):
+            return field
+        updated_flags = unique_preserve_order(list(field.flags) + ["source_not_explicit_governing_law"])
+        return ExtractedField(
+            field_name=field.field_name,
+            value=field.value,
+            confidence=field.confidence,
+            reason=field.reason,
+            evidence_refs=field.evidence_refs,
+            flags=updated_flags,
+        )
+
+    def _governing_law_not_explicit_in_source(
+        self,
+        blocks: list[EvidenceBlock],
+        clauses: list[ClauseUnit] | None,
+    ) -> bool:
+        scope_texts: list[str] = []
+        if clauses:
+            scope_texts.extend(normalize_text(clause.text) for clause in clauses[-8:])
+        scope_texts.extend(normalize_text(block.text) for block in blocks[-32:])
+        compact = re.sub(r"\s+", "", "\n".join(text for text in scope_texts if text))
+        if not compact:
+            return False
+        if _GOVERNING_LAW_EXPLICIT_SIGNAL_RE.search(compact):
+            return False
+        if _GOVERNING_LAW_SOURCE_ABSENT_CONTEXT_RE.search(compact):
+            return True
+
+        global_texts: list[str] = []
+        if clauses:
+            global_texts.extend(normalize_text(clause.text) for clause in clauses)
+        else:
+            global_texts.extend(normalize_text(block.text) for block in blocks)
+        global_compact = re.sub(r"\s+", "", "\n".join(text for text in global_texts if text))
+        if not global_compact:
+            return False
+        if _GOVERNING_LAW_EXPLICIT_SIGNAL_RE.search(global_compact):
+            return False
+        return _GOVERNING_LAW_SOURCE_ABSENT_CONTEXT_RE.search(global_compact) is not None
 
     def _apply_field_validation_gate(
         self,
@@ -287,6 +396,9 @@ class ContractFieldExtractor:
         normalized_value = result.normalized_value
         normalized_confidence = result.confidence if result.confidence is not None else field.confidence
         normalized_reason = field.reason
+        merged_flags = self._strip_missing_reason_flags(field.field_name, merged_flags)
+        if field.field_name == "governing_law" and normalized_value is not None:
+            merged_flags = [flag for flag in merged_flags if flag != "source_not_explicit_governing_law"]
         accepted_field = ExtractedField(
             field_name=field.field_name,
             value=normalized_value,
@@ -338,9 +450,13 @@ class ContractFieldExtractor:
 
     @staticmethod
     def _extract_placeholder_date_token(text: str) -> str | None:
-        match = re.search(r"(令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)", normalize_text(text))
+        normalized = normalize_text(text)
+        match = re.search(r"(令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)", normalized)
         if not match:
-            return None
+            generic = _GENERIC_DATE_PLACEHOLDER_RE.search(normalized)
+            if not generic:
+                return None
+            return normalize_text(generic.group(0))
         return normalize_text(match.group(1))
 
     @staticmethod
@@ -500,6 +616,11 @@ class ContractFieldExtractor:
             re.compile(
                 r"有効期間は[、,]?\s*(?P<date>令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日)\s*から"
             ),
+            re.compile(r"本契約の有効期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
+            re.compile(r"契約期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
+            re.compile(r"委託期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
+            re.compile(r"委託期間\s*(?P<date>年\s*月\s*日)\s*から"),
+            re.compile(r"有効期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
         ]
         for block in blocks:
             text = normalize_text(block.text)
@@ -655,13 +776,16 @@ class ContractFieldExtractor:
         if not should_replace:
             return current
 
+        base_flags = self._strip_missing_reason_flags(current.field_name, list(current.flags))
+        if current.field_name == "governing_law":
+            base_flags = [flag for flag in base_flags if flag != "source_not_explicit_governing_law"]
         return ExtractedField(
             field_name=current.field_name,
             value=best_validated.normalized_value,
             confidence=best_validated.confidence if best_validated.confidence is not None else best_candidate.confidence,
             reason=f"{current.reason};finder:{best_candidate.reason}",
             evidence_refs=unique_preserve_order_refs([best_candidate.evidence_ref] + current.evidence_refs),
-            flags=unique_preserve_order(list(current.flags) + [finder_flag, "finder_supplemented"]),
+            flags=unique_preserve_order(base_flags + [finder_flag, "finder_supplemented"]),
         )
 
     @staticmethod
@@ -830,7 +954,8 @@ class ContractFieldExtractor:
 
         max_page = max((block.page for block in blocks), default=1)
 
-        scanned_blocks = blocks[:80]
+        scanned_limit = max(80, min(len(blocks), 180))
+        scanned_blocks = blocks[:scanned_limit]
         for idx, block in enumerate(scanned_blocks):
             text = normalize_text(block.text)
             if not text:
@@ -856,10 +981,13 @@ class ContractFieldExtractor:
                         name = self._normalize_party_name(match.group("name"))
                         if role not in {"甲", "乙"}:
                             continue
-                        if not self._is_valid_party_name(name):
+                        is_placeholder_name = self._is_placeholder_party_name(name)
+                        if not self._is_valid_party_name(name) and not is_placeholder_name:
                             partial_fragments_detected = True
                             continue
                         score = base_score + zone_bonus
+                        if is_placeholder_name:
+                            score -= 0.06
                         if role_text != text:
                             score -= 0.04
                         previous = role_hits.get(role)
@@ -954,6 +1082,13 @@ class ContractFieldExtractor:
             return False
         reject_markers = ("締結", "契約", "以下", "第", "条")
         return not any(marker in name for marker in reject_markers)
+
+    @staticmethod
+    def _is_placeholder_party_name(name: str) -> bool:
+        compact = re.sub(r"\s+", "", normalize_text(name))
+        if len(compact) < 2:
+            return False
+        return _PARTY_PLACEHOLDER_NAME_RE.fullmatch(compact) is not None
 
     def _extract_expiration_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
         patterns = [
@@ -1061,8 +1196,8 @@ class ContractFieldExtractor:
                 r"本契約[^。\n]{0,80}?(?:適用される法|関する一切の事項)[^。\n]{0,60}?(?P<law>日本法|日本国法)[^。\n]{0,20}?(?:とする|に従う|による)",
                 re.IGNORECASE,
             ),
-            re.compile(r"準拠法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
-            re.compile(r"適用法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)", re.IGNORECASE),
+            re.compile(r"準拠法[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)(?!令|人)", re.IGNORECASE),
+            re.compile(r"適用法(?!令)[^。\n]{0,40}?(?P<law>日本法|日本国法|[^\s、。\n]{2,20}法)(?!令|人)", re.IGNORECASE),
         ]
         clause_keywords = (
             "準拠法",
@@ -1098,6 +1233,10 @@ class ContractFieldExtractor:
                             continue
                         if "協議" in law:
                             continue
+                        if f"{law}人" in sentence_compact or f"{law}令" in sentence_compact:
+                            continue
+                        if "適用法令" in sentence_compact and law not in {"日本法", "日本国法"}:
+                            continue
                         if "日本" in law:
                             law = "日本法"
                         confidence = 0.94 if clause_related else 0.89
@@ -1109,7 +1248,14 @@ class ContractFieldExtractor:
                             evidence_refs=[scope_ref],
                         )
 
-                if re.search(r"[A-Za-z]", sentence_clean):
+                if (
+                    re.search(r"[A-Za-z]{3,}", sentence_clean)
+                    and re.search(
+                        r"(?:governing\s+law|governed\s+by|laws?\s+of|construed\s+in\s+accordance\s+with)",
+                        sentence_clean,
+                        re.IGNORECASE,
+                    )
+                ):
                     english_candidate = validate_governing_law(
                         sentence_clean,
                         reason="matched_governing_law_clause_rule",

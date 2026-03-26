@@ -148,3 +148,69 @@ def test_document_writer_field_dict_includes_semantic_type_and_relative_jurisdic
     assert payload["quality"]["semantic_type"] == "relative_term"
     assert payload["quality"]["relative_jurisdiction_expression"] == "甲の所在地を管轄する裁判所"
     assert "low_quality_jurisdiction" in payload["quality"]["quality_flags"]
+
+
+def test_review_queue_compare_severity_keeps_split_instability_and_section_boundary_high() -> None:
+    assert ReviewQueueBuilder._to_compare_severity("UNSTABLE_CLAUSE_SPLIT", "warning") == "high"
+    assert ReviewQueueBuilder._to_compare_severity("SECTION_BOUNDARY_UNCERTAIN", "warning") == "high"
+
+
+def test_review_queue_compare_severity_lowers_source_absent_governing_law() -> None:
+    assert (
+        ReviewQueueBuilder._to_compare_severity(
+            "MISSING_GOVERNING_LAW",
+            "warning",
+            why_rejected="source_not_explicit_governing_law",
+        )
+        == "low"
+    )
+    assert ReviewQueueBuilder._to_compare_severity("MISSING_GOVERNING_LAW", "warning") == "medium"
+
+
+def test_review_queue_builds_low_severity_for_source_absent_governing_law_signal() -> None:
+    scorer = ReviewScorer()
+    queue_builder = ReviewQueueBuilder()
+    fields = _complete_fields()
+    fields = ContractFields(
+        contract_type=fields.contract_type,
+        counterparties=fields.counterparties,
+        effective_date=fields.effective_date,
+        expiration_date=fields.expiration_date,
+        auto_renewal=fields.auto_renewal,
+        termination_notice_period=fields.termination_notice_period,
+        governing_law=_field("governing_law", None, flags=["source_not_explicit_governing_law"]),
+        jurisdiction=fields.jurisdiction,
+    )
+    issues = [
+        ProcessingIssue(
+            severity=ErrorSeverity.REVIEW,
+            reason_code=ReasonCode.MISSING_GOVERNING_LAW,
+            message="required field is missing: governing_law",
+            details={
+                "field_name": "governing_law",
+                "why_rejected": "source_not_explicit_governing_law",
+                "source_absent": True,
+            },
+        )
+    ]
+    assessment = scorer.score(
+        issues=issues,
+        merged_pages=[
+            MergedPage(
+                page=1,
+                page_kind=DocumentKind.TEXT_NATIVE,
+                native_text_char_count=1200,
+                ocr_ratio=0.02,
+                classification_reason="test",
+            )
+        ],
+        fields=fields,
+    )
+    review = queue_builder.build(doc_id="doc_source_absent", assessment=assessment).payload
+    item = next(
+        candidate
+        for candidate in review["items"]
+        if ReasonCode.MISSING_GOVERNING_LAW.value in candidate.get("reason_codes", [])
+    )
+
+    assert item["severity"] == "low"

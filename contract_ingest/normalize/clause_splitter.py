@@ -29,6 +29,18 @@ _FORM_SIGNAL_RE = re.compile(r"(?:様式第?[0-9０-９一二三四五六七八�
 _INSTRUCTION_SIGNAL_RE = re.compile(r"(?:記載要領|記入要領|作成要領|取扱要領|記載例)")
 _APPENDIX_SIGNAL_RE = re.compile(r"(?:^|\s)(?:別紙|別表|別添|付属資料|仕様書)")
 _SIGNATURE_SIGNAL_RE = re.compile(r"(?:記名押印|署名欄|押印欄|甲\s*[:：]|乙\s*[:：]|住所|氏名|代表者)")
+_EXECUTION_SIGNATURE_SIGNAL_RE = re.compile(
+    r"(?:上記契約の成立を証するため|本契約(?:締結)?の証として|この契約書は[0-9０-９一二三四五六七八九十]+通作成し|電磁的記録|電子署名)"
+)
+_TAIL_FORM_SIGNAL_RE = re.compile(r"(?:必要に応じて追加|任意記載)")
+_LAW_NAME_PREFIX_RE = re.compile(
+    r"(?:民法|商法|会社法|刑法|憲法|個人情報保護法|不正競争防止法|独占禁止法|下請法|著作権法|労働基準法)$"
+)
+_CITATION_TAIL_RE = re.compile(
+    r"^(?:第[0-9０-９一二三四五六七八九十百千〇零]+(?:項|号|節|款)|"
+    r"[のノ][0-9０-９一二三四五六七八九十百千〇零]+|"
+    r"に|を|が|へ|で|と|の|では|において|により|による|に基づ|に従|に定め|で定め|または|若しくは)"
+)
 
 
 @dataclass
@@ -236,7 +248,11 @@ class ClauseSplitter:
         normalized = normalize_text(text)
         if not normalized:
             return []
-        matches = list(_STRONG_ARTICLE_TOKEN_RE.finditer(normalized))
+        matches = [
+            match
+            for match in _STRONG_ARTICLE_TOKEN_RE.finditer(normalized)
+            if ClauseSplitter._is_embedded_heading_split_point(normalized, match.start(), match.end())
+        ]
         if not matches:
             return [normalized]
         if len(matches) == 1 and matches[0].start() == 0:
@@ -257,6 +273,51 @@ class ClauseSplitter:
         return segments
 
     @staticmethod
+    def _is_embedded_heading_split_point(text: str, token_start: int, token_end: int) -> bool:
+        prefix = normalize_text(text[:token_start])
+        suffix = normalize_text(text[token_end:])
+        if ClauseSplitter._looks_like_citation_tail(suffix):
+            return False
+        if token_start <= 0:
+            return True
+        prefix_tail = normalize_text(text[max(0, token_start - 20) : token_start])
+        if ClauseSplitter._looks_like_legal_reference_prefix(prefix_tail):
+            return False
+        compact_prefix = re.sub(r"\s+", "", prefix)
+        if not compact_prefix:
+            return True
+        sentence_boundary = ("。", "．", ":", "：", ";", "；", ")", "）", "]", "】")
+        return compact_prefix.endswith(sentence_boundary)
+
+    @staticmethod
+    def _looks_like_legal_reference_prefix(prefix: str) -> bool:
+        compact = re.sub(r"\s+", "", normalize_text(prefix))
+        if not compact:
+            return False
+        if _LAW_NAME_PREFIX_RE.search(compact):
+            return True
+        return bool(re.search(r"(?<!方)[一-龥]{1,8}法$", compact))
+
+    @staticmethod
+    def _looks_like_citation_tail(tail_text: str) -> bool:
+        compact = re.sub(r"\s+", "", normalize_text(tail_text))
+        if not compact:
+            return False
+        return _CITATION_TAIL_RE.match(compact) is not None
+
+    @staticmethod
+    def _is_probable_in_body_article_reference(heading_text: str) -> bool:
+        compact = re.sub(r"\s+", "", normalize_text(heading_text))
+        if not compact.startswith("第") or "条" not in compact:
+            return False
+        tail = compact.split("条", 1)[1]
+        if not tail:
+            return False
+        if _CITATION_TAIL_RE.match(tail):
+            return True
+        return False
+
+    @staticmethod
     def _should_start_new_clause_heading(
         current: _ClauseDraft | None,
         heading_text: str,
@@ -267,6 +328,8 @@ class ClauseSplitter:
         if not ClauseSplitter._is_valid_clause_heading(heading_text=heading_text, heading=heading, block=block):
             return False
         if is_annotation_like_text(heading_text):
+            return False
+        if heading[0].startswith("第") and ClauseSplitter._is_probable_in_body_article_reference(heading_text):
             return False
         if heading[1] is None and len(heading_text) <= 6 and not block.searchable and not heading[0].startswith("第"):
             return False
@@ -383,7 +446,11 @@ class ClauseSplitter:
             return SectionType.INSTRUCTION
         if _FORM_SIGNAL_RE.search(normalized):
             return SectionType.FORM
+        if _TAIL_FORM_SIGNAL_RE.search(normalized):
+            return SectionType.FORM
         if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
+            return SectionType.SIGNATURE
+        if _EXECUTION_SIGNATURE_SIGNAL_RE.search(normalized):
             return SectionType.SIGNATURE
         if _SIGNATURE_SIGNAL_RE.search(normalized):
             if any(token in normalized for token in ["記名押印", "署名", "押印欄", "住所", "氏名", "代表者"]):
@@ -402,11 +469,11 @@ class ClauseSplitter:
         if section_type == SectionType.APPENDIX:
             return bool(_APPENDIX_SIGNAL_RE.search(normalized))
         if section_type == SectionType.FORM:
-            return bool(_FORM_SIGNAL_RE.search(normalized))
+            return bool(_FORM_SIGNAL_RE.search(normalized) or _TAIL_FORM_SIGNAL_RE.search(normalized))
         if section_type == SectionType.INSTRUCTION:
             return bool(_INSTRUCTION_SIGNAL_RE.search(normalized))
         if section_type == SectionType.SIGNATURE:
-            return bool(_SIGNATURE_SIGNAL_RE.search(normalized))
+            return bool(_SIGNATURE_SIGNAL_RE.search(normalized) or _EXECUTION_SIGNATURE_SIGNAL_RE.search(normalized))
         if section_type == SectionType.MAIN_CONTRACT:
             return bool(re.match(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", normalized))
         return False
@@ -550,6 +617,7 @@ class ClauseSplitter:
         result = self._merge_trailing_clause_fragments(result)
         result = self._repair_reversed_clause_numbers(result)
         result = [self._dedupe_clause_heading_prefix(clause) for clause in result]
+        result = self._merge_spurious_citation_clauses(result)
 
         for idx in range(1, len(result)):
             if result[idx - 1].section_type != result[idx].section_type:
@@ -568,12 +636,47 @@ class ClauseSplitter:
         text = normalize_text(clause.text)
         if not text:
             return clause
-        duplicate_prefix = f"{clause.clause_no} {clause.clause_no}"
-        if text.startswith(duplicate_prefix):
-            text = text[len(clause.clause_no) + 1 :].lstrip()
-        elif text.startswith(f"{clause.clause_no}{clause.clause_no}"):
-            text = text[len(clause.clause_no) :].lstrip()
+        no = re.escape(clause.clause_no)
+        duplicate_head = re.compile(rf"^\s*({no})(?:\s*{no})+")
+        match = duplicate_head.match(text)
+        if match:
+            remainder = text[match.end() :].lstrip()
+            text = f"{clause.clause_no} {remainder}".strip()
         return replace(clause, text=text)
+
+    def _merge_spurious_citation_clauses(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
+        if not clauses:
+            return clauses
+        merged: list[ClauseUnit] = [clauses[0]]
+        for clause in clauses[1:]:
+            prev = merged[-1]
+            if self._is_spurious_citation_clause(previous=prev, current=clause):
+                merged[-1] = self._merge_clause_units(prev, clause, reason_flag="merged_citation_like_clause")
+                continue
+            merged.append(clause)
+        return merged
+
+    @staticmethod
+    def _is_spurious_citation_clause(previous: ClauseUnit, current: ClauseUnit) -> bool:
+        if previous.section_type != SectionType.MAIN_CONTRACT or current.section_type != SectionType.MAIN_CONTRACT:
+            return False
+        if current.clause_no is None or current.clause_title is not None:
+            return False
+        article_no = parse_article_number(current.clause_no)
+        if article_no is None:
+            return False
+        compact_text = re.sub(r"\s+", "", normalize_text(current.text))
+        compact_clause_no = re.sub(r"\s+", "", normalize_text(current.clause_no))
+        if not compact_text.startswith(compact_clause_no):
+            return False
+        citation_tail = compact_text[len(compact_clause_no) :]
+        if not citation_tail:
+            return article_no >= 150 and len(compact_text) <= len(compact_clause_no) + 2
+        if re.match(r"^第[0-9０-９一二三四五六七八九十百千〇零]+(?:項|号|節|款)", citation_tail):
+            return True
+        if article_no >= 150 and _CITATION_TAIL_RE.match(citation_tail):
+            return True
+        return False
 
     def _repair_reversed_clause_numbers(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
         if not clauses:

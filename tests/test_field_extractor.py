@@ -227,6 +227,10 @@ def test_field_extractor_tail_finder_recovers_governing_law_and_jurisdiction_whe
     ]
 
     result = extractor.extract(blocks)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
 
     assert result.fields.governing_law.value == "日本法"
     assert result.fields.jurisdiction.value == "福岡地方裁判所"
@@ -235,6 +239,10 @@ def test_field_extractor_tail_finder_recovers_governing_law_and_jurisdiction_whe
         or result.fields.governing_law.reason == "matched_governing_law_clause_rule"
     )
     assert "finder:" in result.fields.jurisdiction.reason
+    assert ReasonCode.MISSING_GOVERNING_LAW.value not in reason_codes
+    assert ReasonCode.MISSING_JURISDICTION.value not in reason_codes
+    assert ReasonCode.MISSING_GOVERNING_LAW.value not in result.fields.governing_law.flags
+    assert ReasonCode.MISSING_JURISDICTION.value not in result.fields.jurisdiction.flags
 
 
 def test_field_extractor_counterparty_finder_recovers_from_preamble_and_signature_paths() -> None:
@@ -340,9 +348,15 @@ def test_field_extractor_tail_finder_recovers_jurisdiction_from_split_neighbor_b
     ]
 
     result = extractor.extract(blocks)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
 
     assert result.fields.jurisdiction.value == "東京地方裁判所"
     assert "finder:" in result.fields.jurisdiction.reason
+    assert ReasonCode.MISSING_JURISDICTION.value not in reason_codes
+    assert ReasonCode.MISSING_JURISDICTION.value not in result.fields.jurisdiction.flags
 
 
 def test_field_extractor_marks_relative_jurisdiction_expression_without_forcing_normalized_value() -> None:
@@ -532,3 +546,91 @@ def test_field_extractor_keeps_nda_like_governing_law_and_jurisdiction_quality()
 
     assert result.fields.governing_law.value == "日本法"
     assert result.fields.jurisdiction.value == "東京地方裁判所"
+
+
+def test_field_extractor_marks_governing_law_missing_as_source_not_explicit_when_law_clause_absent() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第11条（管轄）福岡地方裁判所を第一審の専属的合意管轄裁判所とする。"),
+    ]
+
+    result = extractor.extract(blocks)
+    missing_issue = next(
+        issue
+        for issue in result.issues
+        if (issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code))
+        == ReasonCode.MISSING_GOVERNING_LAW.value
+    )
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
+
+    assert result.fields.governing_law.value is None
+    assert "source_not_explicit_governing_law" in result.fields.governing_law.flags
+    assert missing_issue.details.get("why_rejected") == "source_not_explicit_governing_law"
+    assert ReasonCode.LOW_QUALITY_GOVERNING_LAW.value not in reason_codes
+
+
+def test_field_extractor_does_not_mark_source_absent_when_governing_law_clause_text_exists() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第12条（準拠法）本契約の準拠法は当事者間の協議により定める。"),
+        _make_block(2, "第13条（管轄）福岡地方裁判所を専属的合意管轄裁判所とする。"),
+    ]
+
+    result = extractor.extract(blocks)
+    missing_issue = next(
+        issue
+        for issue in result.issues
+        if (issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code))
+        == ReasonCode.MISSING_GOVERNING_LAW.value
+    )
+
+    assert result.fields.governing_law.value is None
+    assert "source_not_explicit_governing_law" not in result.fields.governing_law.flags
+    assert missing_issue.details.get("why_rejected") != "source_not_explicit_governing_law"
+
+
+def test_field_extractor_suppresses_governing_law_false_positive_from_tekiyou_hourei_houjin_context() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第4条 乙は適用法令を遵守するものとする。"),
+        _make_block(2, "これは、国立研究開発法人新エネルギー・産業技術総合開発機構(NEDO)の様式である。"),
+        _make_block(3, "第47条 本契約に関する訴えは、横浜地方裁判所を第一審の専属的合意管轄裁判所とする。"),
+    ]
+
+    result = extractor.extract(blocks)
+
+    assert result.fields.governing_law.value is None
+    assert "source_not_explicit_governing_law" in result.fields.governing_law.flags
+    assert result.fields.jurisdiction.value == "横浜地方裁判所"
+
+
+def test_field_extractor_recovers_counterparties_from_late_role_lines_in_long_template() -> None:
+    extractor = ContractFieldExtractor()
+    filler_blocks = [_make_block(i, f"前文ダミー{i}") for i in range(1, 101)]
+    role_blocks = [
+        _make_block(101, "国立研究開発法人新エネルギー・産業技術総合開発機構（以下「甲」という。）"),
+        _make_block(102, "□□□□□（以下「乙」という。）"),
+    ]
+
+    result = extractor.extract([*filler_blocks, *role_blocks])
+
+    assert isinstance(result.fields.counterparties.value, list)
+    assert "国立研究開発法人新エネルギー・産業技術総合開発機構" in result.fields.counterparties.value
+    assert "□□□□□" in result.fields.counterparties.value
+
+
+def test_field_extractor_recovers_blank_placeholder_effective_date_from_signature_context() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "第3条 委託期間 年 月 日から 年 月 日まで"),
+        _make_block(2, "本契約の締結を証するため、契約書○通を作成し、双方記名押印の上、各1通を保有する。"),
+        _make_block(3, "年 月 日", block_type=BlockType.TABLE),
+    ]
+
+    result = extractor.extract(blocks)
+
+    assert result.fields.effective_date.value == "年 月 日"
+    assert "semantic_type:placeholder_term" in result.fields.effective_date.flags

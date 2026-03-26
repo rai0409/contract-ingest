@@ -149,6 +149,18 @@ def test_tail_clause_finder_supports_additional_japanese_governing_law_variants_
     assert weak_context == []
 
 
+def test_tail_clause_finder_does_not_extract_organization_like_law_from_tekiyou_hourei_context() -> None:
+    candidates = find_tail_governing_law_candidates(
+        [
+            _make_block(3, 31, "第44条 乙は適用法令を遵守するものとする。"),
+            _make_block(3, 32, "これは国立研究開発法人の様式である。"),
+        ],
+        route="SERVICE",
+    )
+
+    assert candidates == []
+
+
 def test_tail_clause_finder_captures_relative_and_renewable_date_terms() -> None:
     blocks = [
         _make_block(3, 20, "第9条 本契約は契約締結日から1年間効力を有する。"),

@@ -40,6 +40,10 @@ _ENTITY_TYPE_ONLY_OCR_FRAGMENTS = {
 
 _FORM_SECTION_RE = re.compile(r"(?:^|\s)(?:様式第?[0-9０-９一二三四五六七八九十]+|通知書|届出書|請求書|実績報告書)")
 _INSTRUCTION_SECTION_RE = re.compile(r"(?:記載要領|記入要領|作成要領|取扱要領|記載例)")
+_EXECUTION_SIGNATURE_SECTION_RE = re.compile(
+    r"(?:上記契約の成立を証するため|本契約(?:締結)?の証として|この契約書は[0-9０-９一二三四五六七八九十]+通作成し|電磁的記録|電子署名)"
+)
+_TAIL_OPTIONAL_FORM_RE = re.compile(r"(?:必要に応じて追加|任意記載)")
 
 
 class BlockMerger:
@@ -666,13 +670,15 @@ class BlockMerger:
             return SectionType.SIGNATURE
         if not normalized:
             return SectionType.MAIN_CONTRACT
+        if _EXECUTION_SIGNATURE_SECTION_RE.search(normalized):
+            return SectionType.SIGNATURE
         if "特記事項" in normalized:
             return SectionType.SPECIAL_PROVISIONS
         if LayoutAnalyzer._is_appendix_heading(normalized) or BlockMerger._is_appendix_like_text(normalized):
             return SectionType.APPENDIX
         if _INSTRUCTION_SECTION_RE.search(normalized):
             return SectionType.INSTRUCTION
-        if _FORM_SECTION_RE.search(normalized):
+        if _FORM_SECTION_RE.search(normalized) or _TAIL_OPTIONAL_FORM_RE.search(normalized):
             return SectionType.FORM
         signature_markers = ("契約締結日", "記名押印", "署名欄", "押印欄", "甲", "乙", "代表者", "氏名", "住所")
         if len(normalized) <= 56 and any(marker in normalized for marker in signature_markers):

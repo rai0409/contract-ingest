@@ -102,9 +102,9 @@ def find_tail_governing_law_candidates(
         elif re.search(r"(?:日本法|日本国法)を準拠法とする", compact):
             law = "日本法"
         else:
-            match = re.search(r"準拠法[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)", compact)
+            match = re.search(r"準拠法[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)(?!令|人)", compact)
             if not match:
-                match = re.search(r"適用法[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)", compact)
+                match = re.search(r"適用法(?!令)[^。]{0,24}(?:は|を|:|：)?([一-龥ぁ-んァ-ヶ]{2,10}法)(?!令|人)", compact)
             if match:
                 law = normalize_governing_law_text(match.group(1))
         if law is None:
