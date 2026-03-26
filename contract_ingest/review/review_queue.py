@@ -25,7 +25,11 @@ class ReviewQueueBuilder:
                 warning_count += 1
             if signal.level.value == "critical":
                 critical_count += 1
-            severity = self._to_compare_severity(signal.reason_code, signal.level.value)
+            severity = self._to_compare_severity(
+                signal.reason_code,
+                signal.level.value,
+                why_rejected=signal.why_rejected,
+            )
             if severity == "high":
                 high_count += 1
             elif severity == "medium":
@@ -83,7 +87,7 @@ class ReviewQueueBuilder:
         return ReviewQueueResult(payload=payload)
 
     @staticmethod
-    def _to_compare_severity(reason_code: str, level: str) -> str:
+    def _to_compare_severity(reason_code: str, level: str, *, why_rejected: str | None = None) -> str:
         high_reasons = {
             "UNSTABLE_CLAUSE_SPLIT",
             "OCR_FAILURE",
@@ -101,6 +105,8 @@ class ReviewQueueBuilder:
         }
         if reason_code in high_reasons:
             return "high"
+        if reason_code == "MISSING_GOVERNING_LAW" and why_rejected == "source_not_explicit_governing_law":
+            return "low"
         if reason_code in medium_reasons:
             return "medium"
         if level == "critical":

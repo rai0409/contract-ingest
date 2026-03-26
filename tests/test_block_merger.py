@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contract_ingest.domain.enums import BlockType, DocumentKind, ExtractMethod
+from contract_ingest.domain.enums import BlockType, DocumentKind, ExtractMethod, SectionType
 from contract_ingest.domain.models import (
     BBox,
     LayoutAnalysisResult,
@@ -317,6 +317,22 @@ def test_classify_candidate_kind_does_not_mark_bottom_body_as_signature_without_
     )
 
     assert kind == "body"
+
+
+def test_infer_section_type_marks_execution_signature_and_optional_template_tail() -> None:
+    signature_section = BlockMerger._infer_section_type(
+        "上記契約の成立を証するため、この契約書は2通作成し各自1通を保有する。",
+        block_type=BlockType.TEXT,
+        candidate_kind="body",
+    )
+    optional_form_section = BlockMerger._infer_section_type(
+        "以下、必要に応じて追加記載する。",
+        block_type=BlockType.TEXT,
+        candidate_kind="body",
+    )
+
+    assert signature_section == SectionType.SIGNATURE
+    assert optional_form_section == SectionType.FORM
 
 
 def test_classify_candidate_kind_keeps_english_effective_phrase_as_body() -> None:

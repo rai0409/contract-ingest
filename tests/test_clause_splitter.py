@@ -259,3 +259,101 @@ def test_clause_splitter_separates_form_and_instruction_from_main_contract() -> 
     assert "appendix" in section_types
     assert "form" in section_types
     assert "instruction" in section_types
+
+
+def test_split_embedded_headings_rejects_law_reference_split_point() -> None:
+    segments = ClauseSplitter._split_embedded_headings("本契約は民法 第467条第1項に従って履行する。")
+
+    assert len(segments) == 1
+    assert "第467条第1項" in segments[0]
+
+
+def test_should_start_new_clause_heading_rejects_article_citation_tail() -> None:
+    block = _make_block(1, "第7条第2号に定める事項に従う。")
+    heading = ClauseSplitter._detect_heading(block.text)
+
+    assert heading is not None
+    assert (
+        ClauseSplitter._should_start_new_clause_heading(
+            current=None,
+            heading_text=block.text,
+            heading=heading,
+            previous_article_number=6,
+            block=block,
+        )
+        is False
+    )
+
+
+def test_clause_splitter_keeps_in_body_article_references_inside_parent_clause() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条（目的）本契約の目的を定める。"),
+        _make_block(2, "前項に定める事項は第7条第2号による。"),
+        _make_block(3, "通知は民法 第467条に基づき行う。"),
+        _make_block(4, "第2条（委託料）委託料を定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause_nos = [clause.clause_no for clause in result.clauses]
+
+    assert clause_nos.count("第1条") == 1
+    assert clause_nos.count("第2条") == 1
+    assert "第467条" not in clause_nos
+    assert "第7条第2号" in result.clauses[0].text
+    assert "民法 第467条" in result.clauses[0].text
+
+
+def test_clause_splitter_merges_spurious_high_article_citation_clause() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第10条（通知）通知方法を定める。"),
+        _make_block(2, "第467条または民法の特例法第4条第2項に定める要件に従う。"),
+        _make_block(4, "第11条（委託料）委託料を定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause_nos = [clause.clause_no for clause in result.clauses]
+
+    assert "第467条" not in clause_nos
+    assert clause_nos.count("第10条") == 1
+    clause10 = next(clause for clause in result.clauses if clause.clause_no == "第10条")
+    assert "第467条または" in clause10.text
+
+
+def test_clause_splitter_dedupe_clause_heading_prefix_compact_repeat() -> None:
+    clause = ClauseUnit(
+        clause_id="clause_015",
+        clause_no="第15条",
+        clause_title=None,
+        text="第15条第15条 乙は本契約に従う。",
+        page_start=1,
+        page_end=1,
+        block_ids=["p1_b001"],
+        evidence_refs=[],
+        flags=[],
+    )
+
+    deduped = ClauseSplitter._dedupe_clause_heading_prefix(clause)
+
+    assert deduped.text.startswith("第15条 ")
+    assert "第15条第15条" not in deduped.text
+
+
+def test_clause_splitter_separates_execution_signature_tail_from_main_contract() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第10条（準拠法）本契約は日本法に準拠する。"),
+        _make_block(2, "第11条（管轄）福岡地方裁判所を第一審の専属的合意管轄裁判所とする。"),
+        _make_block(3, "上記契約の成立を証するため、この契約書は2通作成し、各自1通を保有する。"),
+        _make_block(4, "本契約は電磁的記録として作成し、電子署名を行う。"),
+    ]
+
+    result = splitter.split(blocks)
+    main_clauses = [clause for clause in result.clauses if clause.section_type.value == "main_contract"]
+    signature_clauses = [clause for clause in result.clauses if clause.section_type.value == "signature"]
+
+    assert len(main_clauses) >= 2
+    assert signature_clauses
+    assert all("上記契約の成立を証するため" not in clause.text for clause in main_clauses)
+    assert any("上記契約の成立を証するため" in clause.text for clause in signature_clauses)

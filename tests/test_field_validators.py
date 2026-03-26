@@ -34,6 +34,7 @@ def test_validate_governing_law_rejects_japanese_weak_context_terms() -> None:
     assert validate_governing_law("別途協議して定める。").accepted is False
     assert validate_governing_law("法令遵守を徹底する。").accepted is False
     assert validate_governing_law("適用法令を遵守する。").accepted is False
+    assert validate_governing_law("国立研究開発法").accepted is False
 
 
 def test_validate_governing_law_accepts_clause_level_english_and_rejects_weak_context_mentions() -> None:
@@ -112,6 +113,17 @@ def test_validate_counterparties_rejects_entity_type_only_values() -> None:
     assert "counterparty_partial_accept" in partial.quality_flags
 
 
+def test_validate_counterparties_accepts_placeholder_when_role_based_context_is_present() -> None:
+    result = validate_counterparties(
+        ["国立研究開発法人新エネルギー・産業技術総合開発機構", "□□□□□"],
+        reason="matched_party_role_japanese_rule",
+    )
+
+    assert result.accepted is True
+    assert result.normalized_value == ["国立研究開発法人新エネルギー・産業技術総合開発機構", "□□□□□"]
+    assert "counterparty_placeholder" in result.quality_flags
+
+
 def test_validate_effective_date_rejects_zero_length_relative_terms() -> None:
     zero_year = validate_effective_date("本契約締結日から0年間")
     zero_day = validate_effective_date("契約締結日から0日間")
@@ -121,3 +133,10 @@ def test_validate_effective_date_rejects_zero_length_relative_terms() -> None:
     assert "low_quality_effective_date" in zero_year.quality_flags
     assert zero_day.accepted is False
     assert zero_day.reason == "zero_length_effective_period"
+
+
+def test_validate_effective_date_accepts_blank_placeholder_token() -> None:
+    result = validate_effective_date("年 月 日")
+
+    assert result.accepted is True
+    assert "semantic_type:placeholder_term" in result.quality_flags

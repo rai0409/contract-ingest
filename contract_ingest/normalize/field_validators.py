@@ -8,7 +8,9 @@ from contract_ingest.utils.text import normalize_digits, normalize_text, unique_
 
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DATE_TOKEN_RE = re.compile(r"(?:令和\s*[0-9０-９元○◯]+年|[0-9０-９]{4}\s*年|[0-9０-９]{4}\s*[/.]\s*[0-9０-９]{1,2})")
-_PLACEHOLDER_TERM_RE = re.compile(r"(?:令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日|○○年|○○月|○○日)")
+_PLACEHOLDER_TERM_RE = re.compile(
+    r"(?:令和\s*[0-9０-９元○◯]{1,4}年\s*[0-9０-９○◯]{1,3}月\s*[0-9０-９○◯]{1,3}日|○○年|○○月|○○日|年\s*月\s*日)"
+)
 _RELATIVE_EFFECTIVE_TERM_RE = re.compile(
     r"(?:本契約締結日|契約締結日|契約締結の日|締結日|発効日|効力発生日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間"
 )
@@ -62,6 +64,7 @@ _ENTITY_TYPE_ONLY_COUNTERPARTY_VALUES = {
     "国立大学法人",
     "学校法人",
 }
+_PLACEHOLDER_COUNTERPARTY_RE = re.compile(r"^[□■◻◼○◯〇]+$")
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,15 @@ def validate_governing_law(
             raw_value=value,
             quality_flags=["low_quality_governing_law", "ambiguous"],
         )
+    if re.search(r"(?:研究開発法|開発法)$", text) and "日本法" not in text and "日本国法" not in text:
+        return FieldValidationResult(
+            accepted=False,
+            normalized_value=None,
+            reason="organization_like_governing_law_token",
+            confidence=None,
+            raw_value=value,
+            quality_flags=["low_quality_governing_law", "ambiguous"],
+        )
 
     if "日本法" in text or "日本国法" in text:
         normalized = "日本法"
@@ -243,6 +255,20 @@ def validate_governing_law(
             reason="validated_governing_law",
             confidence=max(0.0, min(0.99, base)),
             raw_value=value,
+        )
+
+    if (
+        re.search(r"[A-Za-z]{2,}", text)
+        and re.search(r"[ぁ-んァ-ヶ一-龥]", text)
+        and not _ENGLISH_GOVERNING_LAW_CONTEXT_RE.search(text)
+    ):
+        return FieldValidationResult(
+            accepted=False,
+            normalized_value=None,
+            reason="mixed_language_non_governing_context",
+            confidence=None,
+            raw_value=value,
+            quality_flags=["low_quality_governing_law", "ambiguous"],
         )
 
     english_normalized = _normalize_english_governing_law(text, reason=reason)
@@ -520,12 +546,20 @@ def validate_counterparties(
 
     raw_candidates = value if isinstance(value, list) else [str(value)]
     accepted: list[str] = []
+    placeholder_candidates: list[str] = []
     rejected_candidates: list[str] = []
     quality_flags: list[str] = []
+    allow_placeholder = bool(reason and ("matched_party_role" in reason or "finder_counterparty" in reason))
 
     for raw in raw_candidates:
         candidate = _normalize_counterparty_candidate(raw)
         if not candidate:
+            continue
+        if _is_placeholder_counterparty(candidate):
+            if allow_placeholder:
+                placeholder_candidates.append(candidate)
+            else:
+                rejected_candidates.append(candidate)
             continue
         if _is_bad_counterparty_fragment(candidate):
             salvaged = _extract_company_tail(candidate)
@@ -539,6 +573,10 @@ def validate_counterparties(
             accepted.append(candidate)
             continue
         rejected_candidates.append(candidate)
+
+    if accepted and placeholder_candidates:
+        accepted.extend(placeholder_candidates[: max(0, 2 - len(accepted))])
+        quality_flags.append("counterparty_placeholder")
 
     normalized = unique_preserve_order(accepted)
     if not normalized:
@@ -825,6 +863,13 @@ def _reason_indicates_governing_law_clause(reason: str | None) -> bool:
     if not reason:
         return False
     return "governing_law" in reason
+
+
+def _is_placeholder_counterparty(text: str) -> bool:
+    compact = re.sub(r"\s+", "", normalize_text(text))
+    if len(compact) < 2:
+        return False
+    return _PLACEHOLDER_COUNTERPARTY_RE.fullmatch(compact) is not None
 
 
 def _is_entity_type_only_counterparty(text: str) -> bool:
