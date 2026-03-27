@@ -42,6 +42,10 @@ _CITATION_TAIL_RE = re.compile(
     r"[のノ][0-9０-９一二三四五六七八九十百千〇零]+|"
     r"に|を|が|へ|で|と|の|では|において|により|による|に基づ|に従|に定め|で定め|または|若しくは)"
 )
+_ARTICLE_REFERENCE_CHAIN_TAIL_RE = re.compile(
+    r"^(?:[、,，]第[0-9０-９一二三四五六七八九十百千〇零]+条|(?:及び|又は|または|若しくは)第[0-9０-９一二三四五六七八九十百千〇零]+条)"
+)
+_NUMBERED_CONTINUATION_HEAD_RE = re.compile(r"^\s*(?:\(?[0-9０-９]{1,2}\)?|[一二三四五六七八九十]{1,2}|[①-⑩])(?:[\s　\.．、)]|$)")
 
 
 @dataclass
@@ -87,6 +91,7 @@ class ClauseSplitter:
                 text = normalize_text(segment)
                 if not text:
                     continue
+                text = self._collapse_duplicate_heading_like_fragment(text)
 
                 heading = self._detect_heading(text)
                 section_type = self._infer_section_type(
@@ -95,6 +100,12 @@ class ClauseSplitter:
                     block=block,
                     seen_article_heading=seen_article_heading,
                 )
+                if section_type in {SectionType.FORM, SectionType.SIGNATURE} and self._should_rescue_numbered_continuation(
+                    text=text,
+                    block=block,
+                    current=current,
+                ):
+                    section_type = SectionType.MAIN_CONTRACT
                 if self._is_tail_restart_marker(text):
                     tail_restart_pending = True
                 if (
@@ -338,7 +349,64 @@ class ClauseSplitter:
             return False
         if _CITATION_TAIL_RE.match(tail):
             return True
+        if _ARTICLE_REFERENCE_CHAIN_TAIL_RE.match(tail):
+            return True
         return False
+
+    @staticmethod
+    def _collapse_duplicate_heading_like_fragment(text: str) -> str:
+        normalized = normalize_text(text)
+        if not normalized or len(normalized) > 100:
+            return normalized
+        if not re.match(r"^第[0-9０-９一二三四五六七八九十百千〇零]+(?:章|節|款|編)", normalized):
+            return normalized
+
+        parts = normalized.split()
+        if len(parts) >= 4 and len(parts) % 2 == 0:
+            half = len(parts) // 2
+            left = " ".join(parts[:half]).strip()
+            right = " ".join(parts[half:]).strip()
+            if left and left == right:
+                return left
+
+        compact = re.sub(r"\s+", "", normalized)
+        if len(compact) % 2 == 0:
+            half = len(compact) // 2
+            if half >= 4 and compact[:half] == compact[half:]:
+                return compact[:half]
+        return normalized
+
+    @staticmethod
+    def _should_rescue_numbered_continuation(
+        text: str,
+        block: EvidenceBlock,
+        current: _ClauseDraft | None,
+    ) -> bool:
+        if current is None or current.section_type != SectionType.MAIN_CONTRACT:
+            return False
+        if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA, BlockType.TABLE, BlockType.IMAGE}:
+            return False
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        marker = _NUMBERED_CONTINUATION_HEAD_RE.match(normalized)
+        if marker is None:
+            return False
+        body = normalize_text(normalized[marker.end() :])
+        if len(body) < 8:
+            return False
+        if _INSTRUCTION_SIGNAL_RE.search(body) or _TAIL_FORM_SIGNAL_RE.search(body):
+            return False
+        if _SIGNATURE_SIGNAL_RE.search(body) and any(token in body for token in ["記名押印", "署名欄", "押印欄", "記名", "㊞"]):
+            return False
+        prose_markers = ("は、", "は", "を", "が", "に", "ものとする", "しなければ", "できる", "場合", "とき", "による")
+        if not any(marker in body for marker in prose_markers):
+            return False
+        if _FORM_SIGNAL_RE.search(body):
+            prose_form_markers = ("は、", "を", "が", "ものとする", "しなければ", "できる", "場合", "とき")
+            if not any(marker in body for marker in prose_form_markers):
+                return False
+        return True
 
     @staticmethod
     def _should_start_new_clause_heading(
@@ -674,17 +742,24 @@ class ClauseSplitter:
 
     @staticmethod
     def _dedupe_clause_heading_prefix(clause: ClauseUnit) -> ClauseUnit:
-        if not clause.clause_no:
-            return clause
         text = normalize_text(clause.text)
         if not text:
             return clause
-        no = re.escape(clause.clause_no)
-        duplicate_head = re.compile(rf"^\s*({no})(?:\s*{no})+")
-        match = duplicate_head.match(text)
-        if match:
-            remainder = text[match.end() :].lstrip()
-            text = f"{clause.clause_no} {remainder}".strip()
+        original = text
+        repeated_heading = re.compile(
+            r"(?P<head>(?:第[0-9０-９一二三四五六七八九十百千〇零]+(?:章|節|款|編)\s*[^\n]{0,30}|特記事項|附則))\s*(?:\n|\s)+(?P=head)"
+        )
+        text = repeated_heading.sub(r"\g<head>", text)
+        text = re.sub(r"([（(][^）)]{1,40}[）)])\s+\1", r"\1", text)
+        if clause.clause_no:
+            no = re.escape(clause.clause_no)
+            duplicate_head = re.compile(rf"^\s*({no})(?:\s*{no})+")
+            match = duplicate_head.match(text)
+            if match:
+                remainder = text[match.end() :].lstrip()
+                text = f"{clause.clause_no} {remainder}".strip()
+        if text == original:
+            return clause
         return replace(clause, text=text)
 
     def _merge_spurious_citation_clauses(self, clauses: list[ClauseUnit]) -> list[ClauseUnit]:
