@@ -65,6 +65,11 @@ _ENTITY_TYPE_ONLY_COUNTERPARTY_VALUES = {
     "学校法人",
 }
 _PLACEHOLDER_COUNTERPARTY_RE = re.compile(r"^[□■◻◼○◯〇]+$")
+_COUNTERPARTY_FORMAL_PREFIX_RE = re.compile(
+    r"^(?:国立大学法人|公立大学法人|学校法人|独立行政法人|地方独立行政法人|公益財団法人|公益社団法人|"
+    r"一般財団法人|一般社団法人|社会福祉法人|医療法人|宗教法人|株式会社|有限会社|合同会社)\s*"
+)
+_COUNTERPARTY_GENERIC_ALIAS_VALUES = {"大学", "法人", "会社", "株式会社", "合同会社", "有限会社", "研究所", "機構", "協会"}
 
 
 @dataclass(frozen=True)
@@ -579,6 +584,9 @@ def validate_counterparties(
         quality_flags.append("counterparty_placeholder")
 
     normalized = unique_preserve_order(accepted)
+    normalized, alias_merged = _merge_obvious_counterparty_aliases(normalized)
+    if alias_merged:
+        quality_flags.append("counterparty_alias_merged")
     if not normalized:
         return FieldValidationResult(
             accepted=False,
@@ -590,12 +598,21 @@ def validate_counterparties(
         )
 
     base = confidence if confidence is not None else (0.88 if len(normalized) >= 2 else 0.72)
-    if rejected_candidates or len(normalized) < len(raw_candidates):
+    reduced_without_alias_merge = len(normalized) < len(raw_candidates) and not alias_merged
+    if rejected_candidates or reduced_without_alias_merge:
         quality_flags.append("counterparty_partial_accept")
         base = min(base, 0.70)
         result_reason = "validated_counterparties_partial"
     else:
         result_reason = "validated_counterparties"
+
+    assisted = any(flag in quality_flags for flag in ["counterparty_partial_accept", "counterparty_placeholder"])
+    if len(normalized) >= 2:
+        quality_flags.append(
+            "counterparty_partial_or_placeholder_assisted" if assisted else "counterparty_fully_resolved"
+        )
+    else:
+        quality_flags.append("counterparty_one_side_only")
 
     return FieldValidationResult(
         accepted=True,
@@ -615,6 +632,67 @@ def _normalize_counterparty_candidate(value: str) -> str:
     text = text.strip(" 　,:：;；、，。()（）[]【】『』「」")
     text = text.rstrip("と、のはにを")
     return text
+
+
+def _merge_obvious_counterparty_aliases(candidates: list[str]) -> tuple[list[str], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    merged = False
+    canonical: list[str] = []
+    for candidate in candidates:
+        candidate_text = normalize_text(candidate)
+        if not candidate_text:
+            continue
+        candidate_base = _COUNTERPARTY_FORMAL_PREFIX_RE.sub("", candidate_text).strip()
+        candidate_has_formal = candidate_base != candidate_text
+        merged_with_existing = False
+
+        for idx, existing in enumerate(canonical):
+            existing_base = _COUNTERPARTY_FORMAL_PREFIX_RE.sub("", existing).strip()
+            existing_has_formal = existing_base != existing
+
+            if existing == candidate_text:
+                merged = True
+                merged_with_existing = True
+                break
+
+            longer, shorter = (existing, candidate_text) if len(existing) >= len(candidate_text) else (candidate_text, existing)
+            longer_base = _COUNTERPARTY_FORMAL_PREFIX_RE.sub("", longer).strip()
+            shorter_base = _COUNTERPARTY_FORMAL_PREFIX_RE.sub("", shorter).strip()
+            shorter_compact = re.sub(r"\s+", "", shorter_base or shorter)
+            if (
+                len(shorter_compact) < 2
+                or shorter_compact in _COUNTERPARTY_GENERIC_ALIAS_VALUES
+                or not (existing_has_formal or candidate_has_formal)
+            ):
+                continue
+
+            can_merge = (
+                longer_base == shorter
+                or longer_base == shorter_base
+                or longer_base.endswith(shorter_base)
+                or longer.endswith(shorter)
+            )
+            if not can_merge:
+                continue
+
+            preferred = existing
+            if candidate_has_formal and not existing_has_formal:
+                preferred = candidate_text
+            elif existing_has_formal and not candidate_has_formal:
+                preferred = existing
+            elif len(candidate_text) > len(existing):
+                preferred = candidate_text
+            canonical[idx] = preferred
+            merged = True
+            merged_with_existing = True
+            break
+
+        if not merged_with_existing:
+            canonical.append(candidate_text)
+
+    return canonical, merged
 
 
 def _is_bad_counterparty_fragment(text: str) -> bool:
@@ -637,7 +715,12 @@ def _is_bad_counterparty_fragment(text: str) -> bool:
     symbol_count = sum(1 for ch in text if ch in "[]{}<>|/\\*#@")
     if len(text) <= 16 and symbol_count >= 2:
         return True
-    if len(text) <= 4 and "会社" not in text and "法人" not in text:
+    if (
+        len(text) <= 4
+        and "会社" not in text
+        and "法人" not in text
+        and all(marker not in text for marker in ("大学", "研究所", "機構", "協会", "銀行", "組合", "センター"))
+    ):
         return True
     return False
 

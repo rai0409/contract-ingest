@@ -33,6 +33,7 @@ _EXECUTION_SIGNATURE_SIGNAL_RE = re.compile(
     r"(?:上記契約の成立を証するため|本契約(?:締結)?の証として|この契約書は[0-9０-９一二三四五六七八九十]+通作成し|電磁的記録|電子署名)"
 )
 _TAIL_FORM_SIGNAL_RE = re.compile(r"(?:必要に応じて追加|任意記載)")
+_TAIL_RESTART_SECTION_SIGNAL_RE = re.compile(r"(?:業務委託契約約款|約款本文)")
 _LAW_NAME_PREFIX_RE = re.compile(
     r"(?:民法|商法|会社法|刑法|憲法|個人情報保護法|不正競争防止法|独占禁止法|下請法|著作権法|労働基準法)$"
 )
@@ -78,6 +79,7 @@ class ClauseSplitter:
         pending_next_clause_title: tuple[str, EvidenceBlock, str] | None = None
         seen_article_heading = False
         section_boundary_uncertain_count = 0
+        tail_restart_pending = False
 
         for block in ordered:
             raw_text = str(block.text)
@@ -93,6 +95,27 @@ class ClauseSplitter:
                     block=block,
                     seen_article_heading=seen_article_heading,
                 )
+                if self._is_tail_restart_marker(text):
+                    tail_restart_pending = True
+                if (
+                    tail_restart_pending
+                    and heading is not None
+                    and heading[0].startswith("第")
+                    and section_type == SectionType.MAIN_CONTRACT
+                ):
+                    article_no = parse_article_number(heading[0])
+                    if (
+                        article_no is not None
+                        and article_no <= 3
+                        and (
+                            (
+                                previous_article_number is not None
+                                and previous_article_number >= 8
+                            )
+                            or (current is not None and current.section_type == SectionType.APPENDIX)
+                        )
+                    ):
+                        section_type = SectionType.APPENDIX
                 if heading is not None and heading[0].startswith("第"):
                     seen_article_heading = True
 
@@ -338,11 +361,22 @@ class ClauseSplitter:
             return True
         if previous_article_number is None:
             return True
+        if (
+            current is not None
+            and current.section_type == SectionType.MAIN_CONTRACT
+            and current_number < previous_article_number
+            and current_number <= 3
+            and previous_article_number >= 8
+            and ClauseSplitter._is_tail_restart_marker(
+                f"{' '.join(current.text_parts[-3:])} {heading_text}"
+            )
+        ):
+            return False
         # Ignore likely OCR-induced reverse headings when the candidate looks too short/noisy.
         if current_number < previous_article_number:
             if len(heading_text) < 20 or (not block.searchable and is_fragment_like_text(heading_text)):
                 return False
-        if current is not None and current.clause_no == heading[0] and len(heading_text) < 20:
+        if current is not None and current.clause_no == heading[0]:
             return False
         return True
 
@@ -442,6 +476,8 @@ class ClauseSplitter:
             return SectionType.SPECIAL_PROVISIONS
         if _APPENDIX_SIGNAL_RE.search(normalized):
             return SectionType.APPENDIX
+        if ClauseSplitter._is_tail_restart_marker(normalized):
+            return SectionType.APPENDIX
         if _INSTRUCTION_SIGNAL_RE.search(normalized):
             return SectionType.INSTRUCTION
         if _FORM_SIGNAL_RE.search(normalized):
@@ -467,7 +503,7 @@ class ClauseSplitter:
         if section_type == SectionType.SPECIAL_PROVISIONS:
             return "特記事項" in normalized
         if section_type == SectionType.APPENDIX:
-            return bool(_APPENDIX_SIGNAL_RE.search(normalized))
+            return bool(_APPENDIX_SIGNAL_RE.search(normalized) or ClauseSplitter._is_tail_restart_marker(normalized))
         if section_type == SectionType.FORM:
             return bool(_FORM_SIGNAL_RE.search(normalized) or _TAIL_FORM_SIGNAL_RE.search(normalized))
         if section_type == SectionType.INSTRUCTION:
@@ -477,6 +513,13 @@ class ClauseSplitter:
         if section_type == SectionType.MAIN_CONTRACT:
             return bool(re.match(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", normalized))
         return False
+
+    @staticmethod
+    def _is_tail_restart_marker(text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        return _TAIL_RESTART_SECTION_SIGNAL_RE.search(normalized) is not None
 
     @staticmethod
     def _is_non_clause_material(

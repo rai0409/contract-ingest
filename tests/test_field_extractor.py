@@ -75,6 +75,25 @@ def test_counterparties_extracts_kou_otsu_with_legal_entity_normalization() -> N
     assert result.fields.counterparties.value == ["株式会社サンプル", "株式会社テスト"]
 
 
+def test_counterparties_alias_canonicalization_does_not_fall_back_to_absent() -> None:
+    extractor = ContractFieldExtractor()
+    blocks = [
+        _make_block(1, "国立大学法人九州大学（以下「甲」という。）"),
+        _make_block(2, "九州大学（以下「乙」という。）"),
+    ]
+
+    result = extractor.extract(blocks)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
+
+    assert result.fields.counterparties.value == ["国立大学法人九州大学"]
+    assert "counterparty_alias_merged" in result.fields.counterparties.flags
+    assert "counterparty_one_side_only" in result.fields.counterparties.flags
+    assert ReasonCode.LOW_QUALITY_COUNTERPARTY.value not in reason_codes
+
+
 def test_effective_date_anchor_is_not_reported_as_pure_missing() -> None:
     extractor = ContractFieldExtractor()
     blocks = [
