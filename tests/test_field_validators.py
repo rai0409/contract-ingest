@@ -122,6 +122,32 @@ def test_validate_counterparties_accepts_placeholder_when_role_based_context_is_
     assert result.accepted is True
     assert result.normalized_value == ["国立研究開発法人新エネルギー・産業技術総合開発機構", "□□□□□"]
     assert "counterparty_placeholder" in result.quality_flags
+    assert "counterparty_partial_or_placeholder_assisted" in result.quality_flags
+
+
+def test_validate_counterparties_merges_obvious_formal_alias_to_canonical_name() -> None:
+    result = validate_counterparties(
+        ["国立大学法人九州大学", "九州大学"],
+        reason="finder_counterparty_service",
+    )
+
+    assert result.accepted is True
+    assert result.normalized_value == ["国立大学法人九州大学"]
+    assert "counterparty_alias_merged" in result.quality_flags
+    assert "counterparty_one_side_only" in result.quality_flags
+    assert "counterparty_partial_accept" not in result.quality_flags
+
+
+def test_validate_counterparties_keeps_fully_resolved_two_party_baseline() -> None:
+    result = validate_counterparties(
+        ["株式会社サンプル", "株式会社テスト"],
+        reason="matched_party_role_japanese_rule",
+    )
+
+    assert result.accepted is True
+    assert result.normalized_value == ["株式会社サンプル", "株式会社テスト"]
+    assert "counterparty_fully_resolved" in result.quality_flags
+    assert "counterparty_partial_or_placeholder_assisted" not in result.quality_flags
 
 
 def test_validate_effective_date_rejects_zero_length_relative_terms() -> None:

@@ -240,6 +240,57 @@ def test_merger_merges_only_compatible_body_blocks() -> None:
     assert merged.blocks[1].text == "別列テキスト"
 
 
+def test_merger_dedupes_mirrored_left_right_duplicate_body_blocks() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block(
+                "p1_n001",
+                "第12条 本契約に基づく通知は書面により行う。",
+                x0=20.0,
+                y0=100.0,
+                x1=280.0,
+                y1=126.0,
+            ),
+            _native_block(
+                "p1_n002",
+                "第12条 本契約に基づく通知は書面により行う。",
+                x0=330.0,
+                y0=101.0,
+                x1=590.0,
+                y1=127.0,
+            ),
+            _native_block("p1_n003", "第13条 協議事項を定める。", x0=20.0, y0=170.0, x1=560.0, y1=196.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+    texts = [block.text for block in merged.blocks]
+
+    assert texts.count("第12条 本契約に基づく通知は書面により行う。") == 1
+    assert "第13条 協議事項を定める。" in texts
+    assert len(merged.blocks) == 2
+
+
+def test_merger_keeps_side_by_side_distinct_content_even_when_geometry_is_mirrored() -> None:
+    native_result = _single_page_native_result(
+        [
+            _native_block("p1_n001", "第12条 甲の義務を定める。", x0=20.0, y0=100.0, x1=280.0, y1=126.0),
+            _native_block("p1_n002", "第12条 乙の義務を定める。", x0=330.0, y0=101.0, x1=590.0, y1=127.0),
+        ]
+    )
+    layout_result = _layout_result([])
+    ocr_result = OCRExtractionResult(blocks=[], issues=[])
+
+    merged = BlockMerger().merge(native_result=native_result, layout_result=layout_result, ocr_result=ocr_result)
+    texts = [block.text for block in merged.blocks]
+
+    assert len(merged.blocks) == 2
+    assert "第12条 甲の義務を定める。" in texts
+    assert "第12条 乙の義務を定める。" in texts
+
+
 def test_can_merge_body_rejects_annotation_signature_header_and_short_ocr_noise() -> None:
     prev = {
         "bbox": BBox(20.0, 100.0, 560.0, 125.0),

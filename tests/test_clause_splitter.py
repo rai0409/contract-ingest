@@ -357,3 +357,40 @@ def test_clause_splitter_separates_execution_signature_tail_from_main_contract()
     assert signature_clauses
     assert all("上記契約の成立を証するため" not in clause.text for clause in main_clauses)
     assert any("上記契約の成立を証するため" in clause.text for clause in signature_clauses)
+
+
+def test_clause_splitter_avoids_main_clause_restart_spawn_in_tail_restart_context() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第8条 乙は委託業務の成果を甲に報告する。"),
+        _make_block(2, "第9条 甲及び乙は存続条項を遵守する。"),
+        _make_block(3, "本契約の締結を証するため、契約書2通を作成し、双方記名押印の上、各1通を保有する。"),
+        _make_block(4, "2.業務委託契約約款 (1)約款本文"),
+        _make_block(5, "第1条 乙は実施計画書に従って委託業務を実施する。"),
+        _make_block(6, "第2条 乙は再委託に関する手続きを履行する。"),
+    ]
+
+    result = splitter.split(blocks)
+    main_clause_nos = [clause.clause_no for clause in result.clauses if clause.section_type.value == "main_contract"]
+    appendix_texts = [clause.text for clause in result.clauses if clause.section_type.value == "appendix"]
+
+    assert "第1条" not in main_clause_nos
+    assert "第2条" not in main_clause_nos
+    assert any("約款本文" in text for text in appendix_texts)
+    assert all(issue.reason_code != ReasonCode.REVERSED_CLAUSE_NUMBER for issue in result.issues)
+
+
+def test_clause_splitter_treats_tail_restart_marker_as_appendix_boundary_signal() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第10条 甲は成果物の検査を行う。"),
+        _make_block(2, "上記契約の成立を証するため、この契約書は2通作成し各自1通を保有する。"),
+        _make_block(3, "業務委託契約約款"),
+        _make_block(4, "約款本文"),
+    ]
+
+    result = splitter.split(blocks)
+    section_types = [clause.section_type.value for clause in result.clauses]
+
+    assert "signature" in section_types
+    assert "appendix" in section_types

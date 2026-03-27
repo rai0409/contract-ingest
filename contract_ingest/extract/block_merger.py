@@ -256,6 +256,13 @@ class BlockMerger:
             candidates = sorted(page_candidates[page_no], key=lambda c: (c["bbox"].y0, c["bbox"].x0))
 
             page_height = self._estimate_page_height(candidates)
+            page_x0 = min((float(candidate["bbox"].x0) for candidate in candidates), default=0.0)
+            page_x1 = max((float(candidate["bbox"].x1) for candidate in candidates), default=1000.0)
+            mirrored_text_counts: dict[str, int] = defaultdict(int)
+            for candidate in candidates:
+                mirrored_key = self._normalize_mirrored_compare_text(str(candidate.get("text", "")))
+                if mirrored_key:
+                    mirrored_text_counts[mirrored_key] += 1
             kept: list[dict] = []
             for candidate in candidates:
                 if not candidate["text"]:
@@ -265,6 +272,15 @@ class BlockMerger:
                     same_text = candidate["text"] == existing["text"]
                     overlap = candidate["bbox"].iou(existing["bbox"]) > 0.90
                     if same_text and overlap:
+                        is_duplicate = True
+                        break
+                    if self._is_mirrored_duplicate_pair(
+                        candidate,
+                        existing,
+                        page_x0=page_x0,
+                        page_x1=page_x1,
+                        text_counts=mirrored_text_counts,
+                    ):
                         is_duplicate = True
                         break
                 if not is_duplicate:
@@ -378,6 +394,76 @@ class BlockMerger:
         if not candidates:
             return 1000.0
         return max(float(candidate["bbox"].y1) for candidate in candidates)
+
+    @staticmethod
+    def _normalize_mirrored_compare_text(text: str) -> str:
+        normalized = normalize_text(text)
+        if not normalized:
+            return ""
+        compact = re.sub(r"[ \u3000\t\r\n]+", "", normalized)
+        return compact.strip("、。．，,:：;；")
+
+    @staticmethod
+    def _is_mirrored_duplicate_pair(
+        candidate: dict,
+        existing: dict,
+        *,
+        page_x0: float,
+        page_x1: float,
+        text_counts: dict[str, int],
+    ) -> bool:
+        if candidate.get("candidate_kind") != "body" or existing.get("candidate_kind") != "body":
+            return False
+        if candidate.get("block_type") != BlockType.TEXT or existing.get("block_type") != BlockType.TEXT:
+            return False
+
+        candidate_text = BlockMerger._normalize_mirrored_compare_text(str(candidate.get("text", "")))
+        existing_text = BlockMerger._normalize_mirrored_compare_text(str(existing.get("text", "")))
+        if not candidate_text or candidate_text != existing_text:
+            return False
+        if len(candidate_text) < 10:
+            return False
+        if text_counts.get(candidate_text, 0) < 2:
+            return False
+
+        cand_bbox = candidate["bbox"]
+        exist_bbox = existing["bbox"]
+        min_height = min(float(cand_bbox.height), float(exist_bbox.height))
+        if min_height <= 0.0:
+            return False
+        max_height = max(float(cand_bbox.height), float(exist_bbox.height))
+        if max_height / min_height > 1.25:
+            return False
+
+        y_overlap = max(0.0, min(cand_bbox.y1, exist_bbox.y1) - max(cand_bbox.y0, exist_bbox.y0))
+        if y_overlap / min_height < 0.85:
+            return False
+
+        min_width = min(float(cand_bbox.width), float(exist_bbox.width))
+        if min_width <= 0.0:
+            return False
+        max_width = max(float(cand_bbox.width), float(exist_bbox.width))
+        if max_width / min_width > 1.35:
+            return False
+
+        x_overlap = max(0.0, min(cand_bbox.x1, exist_bbox.x1) - max(cand_bbox.x0, exist_bbox.x0))
+        if x_overlap / min_width > 0.15:
+            return False
+
+        page_width = max(1.0, page_x1 - page_x0)
+        candidate_center = (cand_bbox.x0 + cand_bbox.x1) / 2.0
+        existing_center = (exist_bbox.x0 + exist_bbox.x1) / 2.0
+        if abs(candidate_center - existing_center) < max(120.0, page_width * 0.28):
+            return False
+
+        page_mid = page_x0 + page_width / 2.0
+        crosses_page_mid = (
+            (candidate_center < page_mid and existing_center > page_mid)
+            or (candidate_center > page_mid and existing_center < page_mid)
+        )
+        if not crosses_page_mid:
+            return False
+        return True
 
     @staticmethod
     def _estimate_page_heights(native_by_page: dict[int, list], regions_by_page: dict[int, list]) -> dict[int, float]:
