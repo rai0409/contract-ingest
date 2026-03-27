@@ -394,3 +394,68 @@ def test_clause_splitter_treats_tail_restart_marker_as_appendix_boundary_signal(
 
     assert "signature" in section_types
     assert "appendix" in section_types
+
+
+def test_clause_splitter_collapses_duplicate_heading_like_fragment() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第6章 雑則 第6章 雑則 （契約変更） （契約変更）"),
+        _make_block(2, "第1条（目的）本契約の目的を定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    preamble = next(clause for clause in result.clauses if clause.section_type.value == "preamble")
+
+    assert "第6章 雑則 第6章 雑則" not in preamble.text
+    assert "（契約変更） （契約変更）" not in preamble.text
+    assert "第6章 雑則" in preamble.text
+
+
+def test_clause_splitter_rescues_numbered_prose_continuation_from_form_misclassification() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第6条（委託代金）委託代金の支払条件を定める。"),
+        _make_block(2, "2 委託代金は、受託者の請求書を受領後30日以内に支払うものとする。"),
+        _make_block(3, "第7条（通知）通知方法を定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause6 = next(clause for clause in result.clauses if clause.clause_no == "第6条")
+
+    assert clause6.section_type.value == "main_contract"
+    assert "2 委託代金は、受託者の請求書を受領後30日以内に支払うものとする。" in clause6.text
+    assert all(clause.section_type.value != "form" for clause in result.clauses if clause.clause_no == "第6条")
+
+
+def test_clause_splitter_rescues_numbered_prose_continuation_from_signature_misclassification() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第41条（損害賠償）損害賠償について定める。"),
+        _make_block(2, "6 甲は、代表者が不正等の事実を認めたときは、直ちに乙へ通知するものとする。"),
+        _make_block(3, "第42条（協議）本契約に関する疑義は協議して解決する。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause41 = next(clause for clause in result.clauses if clause.clause_no == "第41条")
+
+    assert clause41.section_type.value == "main_contract"
+    assert "6 甲は、代表者が不正等の事実を認めたときは、直ちに乙へ通知するものとする。" in clause41.text
+    assert all(clause.section_type.value != "signature" for clause in result.clauses if clause.clause_no == "第41条")
+
+
+def test_clause_splitter_keeps_article_reference_chain_inside_parent_clause() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第10条（存続）本契約の存続条項を定める。"),
+        _make_block(2, "第3条、第19条、第20条第3項及び第75号)の規定により、乙は資料を返還する。"),
+        _make_block(3, "第11条（通知）通知方法を定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause_nos = [clause.clause_no for clause in result.clauses]
+    clause10 = next(clause for clause in result.clauses if clause.clause_no == "第10条")
+
+    assert clause_nos.count("第10条") == 1
+    assert clause_nos.count("第11条") == 1
+    assert clause_nos.count("第3条") == 0
+    assert "第3条、第19条、第20条第3項及び第75号)の規定により" in clause10.text
