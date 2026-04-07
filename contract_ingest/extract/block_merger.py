@@ -251,6 +251,17 @@ class BlockMerger:
 
         merged_blocks: list[UnifiedBlock] = []
         global_reading_order = 1
+        template_residual_doc_counts: dict[str, int] = defaultdict(int)
+        template_residual_pages: dict[str, set[int]] = defaultdict(set)
+        template_residual_page_counts: dict[tuple[int, str], int] = defaultdict(int)
+        for page_no, candidates in page_candidates.items():
+            for candidate in candidates:
+                residual_key = self._template_header_residual_key(str(candidate.get("text", "")))
+                if residual_key is None:
+                    continue
+                template_residual_doc_counts[residual_key] += 1
+                template_residual_pages[residual_key].add(page_no)
+                template_residual_page_counts[(page_no, residual_key)] += 1
 
         for page_no in sorted(page_candidates):
             candidates = sorted(page_candidates[page_no], key=lambda c: (c["bbox"].y0, c["bbox"].x0))
@@ -267,6 +278,23 @@ class BlockMerger:
             for candidate in candidates:
                 if not candidate["text"]:
                     continue
+                if kept and self._is_local_exact_body_repeat_residual(previous=kept[-1], current=candidate):
+                    continue
+                residual_key = self._template_header_residual_key(str(candidate.get("text", "")))
+                if residual_key is not None:
+                    doc_count = template_residual_doc_counts.get(residual_key, 0)
+                    page_span = len(template_residual_pages.get(residual_key, set()))
+                    page_count = template_residual_page_counts.get((page_no, residual_key), 0)
+                    near_top = candidate["bbox"].y0 <= page_height * 0.70
+                    template_boundary_like = candidate.get("candidate_kind") == "annotation" or residual_key[:1] in {"(", "（"}
+                    if (
+                        doc_count >= 3
+                        and (page_span >= 2 or page_count >= 2)
+                        and (near_top or template_boundary_like)
+                        and candidate.get("block_type")
+                        not in {BlockType.TABLE, BlockType.IMAGE, BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}
+                    ):
+                        continue
                 is_duplicate = False
                 for existing in kept:
                     same_text = candidate["text"] == existing["text"]
@@ -402,6 +430,72 @@ class BlockMerger:
             return ""
         compact = re.sub(r"[ \u3000\t\r\n]+", "", normalized)
         return compact.strip("、。．，,:：;；")
+
+    @staticmethod
+    def _template_header_residual_key(text: str) -> str | None:
+        normalized = normalize_text(text)
+        if not normalized or len(normalized) > 64:
+            return None
+        if LayoutAnalyzer._looks_like_sentence_text(normalized):
+            return None
+        compact = re.sub(r"[ \u3000\t\r\n]+", "", normalized)
+        compact = compact.replace("（", "(").replace("）", ")")
+        if any(token in compact for token in ["。", "．", ":", "：", ";", "；"]):
+            return None
+        if "業務委託契約標準契約書(新)" in compact and "業務委託契約標準契約書(旧)" in compact:
+            return "業務委託契約標準契約書(新)業務委託契約標準契約書(旧)"
+        if re.fullmatch(r"\(?[0-9０-９一二三四五六七八九十]+\)?(?:約款本文|様式|業務委託契約約款別表)", compact):
+            return compact
+        return None
+
+    @staticmethod
+    def _is_local_exact_body_repeat_residual(previous: dict, current: dict) -> bool:
+        if previous.get("section_type") != SectionType.MAIN_CONTRACT or current.get("section_type") != SectionType.MAIN_CONTRACT:
+            return False
+        if previous.get("block_type") not in {BlockType.TEXT, BlockType.OTHER}:
+            return False
+        if current.get("block_type") not in {BlockType.TEXT, BlockType.OTHER}:
+            return False
+
+        prev_text = normalize_text(str(previous.get("text", "")))
+        curr_text = normalize_text(str(current.get("text", "")))
+        if not prev_text or not curr_text:
+            return False
+        prev_compact = re.sub(r"[ \u3000\t\r\n]+", "", prev_text)
+        curr_compact = re.sub(r"[ \u3000\t\r\n]+", "", curr_text)
+        if prev_compact != curr_compact:
+            return False
+        if len(curr_compact) < 4 or len(curr_compact) > 30:
+            return False
+        if not curr_text.endswith(("。", "．")):
+            return False
+        if not re.match(r"^\s*(?:[にをがでとへ]|この|その|または|又は|及び|並びに|[ぁ-ん])", curr_text):
+            return False
+        if re.match(r"^\s*(?:\(?[0-9０-９一二三四五六七八九十]+\)?|[①-⑳])(?:[)）\.．、\s]|$)", curr_text):
+            return False
+        if "第" in curr_text and "条" in curr_text:
+            return False
+
+        prev_bbox = previous["bbox"]
+        curr_bbox = current["bbox"]
+        min_height = min(prev_bbox.height, curr_bbox.height)
+        if min_height <= 0.0:
+            return False
+        y_overlap = max(0.0, min(prev_bbox.y1, curr_bbox.y1) - max(prev_bbox.y0, curr_bbox.y0))
+        if y_overlap / min_height >= 0.90:
+            prev_center = (prev_bbox.x0 + prev_bbox.x1) / 2.0
+            curr_center = (curr_bbox.x0 + curr_bbox.x1) / 2.0
+            center_gap = abs(prev_center - curr_center)
+            min_width = min(prev_bbox.width, curr_bbox.width)
+            if center_gap >= max(120.0, min_width * 2.0):
+                return True
+
+        overlap_x = max(0.0, min(prev_bbox.x1, curr_bbox.x1) - max(prev_bbox.x0, curr_bbox.x0))
+        min_width = min(prev_bbox.width, curr_bbox.width)
+        if min_width <= 0.0 or overlap_x / min_width < 0.55:
+            return False
+        vertical_gap = curr_bbox.y0 - prev_bbox.y1
+        return -2.0 <= vertical_gap <= max(14.0, min(prev_bbox.height, curr_bbox.height) * 1.6)
 
     @staticmethod
     def _is_mirrored_duplicate_pair(

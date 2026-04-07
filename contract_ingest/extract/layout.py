@@ -281,6 +281,7 @@ class LayoutAnalyzer:
                     and block.bbox.x0 >= page_width * 0.82
                     and block.bbox.width <= page_width * 0.24
                     and len(text) <= 40
+                    and not LayoutAnalyzer._looks_like_sentence_text(text)
                 )
                 if not in_margin and not right_side_note:
                     continue
@@ -312,6 +313,19 @@ class LayoutAnalyzer:
             return "annotation"
         if is_page_number_text(normalized):
             return "header_footer"
+        if normalized in repeated_margin_texts and bbox.x0 >= 420.0 and bbox.width <= 180.0:
+            return "annotation"
+        if LayoutAnalyzer._looks_like_continuation_with_context(
+            text=normalized,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+            prev_text=prev_text,
+            prev_bbox=prev_bbox,
+            next_text=next_text,
+            next_bbox=next_bbox,
+        ):
+            return "body"
         if LayoutAnalyzer._looks_like_header_footer_block(
             normalized,
             bbox=bbox,
@@ -319,16 +333,6 @@ class LayoutAnalyzer:
             repeated_margin_texts=repeated_margin_texts,
         ):
             return "header_footer"
-        if LayoutAnalyzer._looks_like_continuation_with_context(
-            text=normalized,
-            bbox=bbox,
-            page_height=page_height,
-            prev_text=prev_text,
-            prev_bbox=prev_bbox,
-            next_text=next_text,
-            next_bbox=next_bbox,
-        ):
-            return "body"
         if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
             return "body"
         if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
@@ -473,13 +477,22 @@ class LayoutAnalyzer:
         text: str,
         bbox: BBox,
         page_height: float,
+        repeated_margin_texts: set[str],
         prev_text: str | None,
         prev_bbox: BBox | None,
         next_text: str | None,
         next_bbox: BBox | None,
     ) -> bool:
         is_short_critical = LayoutAnalyzer._looks_like_short_critical_clause_line(text)
-        if not is_short_critical and (len(text) < 12 or not LayoutAnalyzer._looks_like_sentence_text(text)):
+        sentence_like = LayoutAnalyzer._looks_like_sentence_text(text)
+        starts_with_particle = text[0] in {"の", "て", "に", "を", "が", "で", "と", "も"}
+        ends_with_fragment = text[-1] in {"の", "て", "に", "を", "が", "で", "と", "、", "，", "-", "〜", "~", "し", "る"}
+        continuation_shape = len(text) <= 28 and (starts_with_particle or ends_with_fragment)
+        if not is_short_critical and not sentence_like and not continuation_shape:
+            return False
+        if text in repeated_margin_texts:
+            return False
+        if LayoutAnalyzer._looks_like_annotation_column(text, bbox=bbox, page_height=page_height):
             return False
 
         def _compatible_neighbor(candidate_text: str | None, candidate_bbox: BBox | None, gap: float) -> bool:
@@ -488,30 +501,52 @@ class LayoutAnalyzer:
             candidate = normalize_text(candidate_text)
             if not candidate:
                 return False
+            if candidate in repeated_margin_texts:
+                return False
             if is_page_number_text(candidate) or is_annotation_like_text(candidate):
                 return False
+            if LayoutAnalyzer._looks_like_annotation_column(candidate, bbox=candidate_bbox, page_height=page_height):
+                return False
+            if LayoutAnalyzer._looks_like_header_footer_block(
+                candidate,
+                bbox=candidate_bbox,
+                page_height=page_height,
+                repeated_margin_texts=repeated_margin_texts,
+            ):
+                return False
+            candidate_sentence_like = LayoutAnalyzer._looks_like_sentence_text(candidate)
+            candidate_short_critical = LayoutAnalyzer._looks_like_short_critical_clause_line(candidate)
+            if (
+                LayoutAnalyzer._is_signature_like_text(candidate, candidate_bbox, page_height)
+                and not candidate_sentence_like
+                and not candidate_short_critical
+            ):
+                return False
             if LayoutAnalyzer._is_low_value_fragment_text(candidate):
-                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
+                if not candidate_short_critical:
                     return False
-            if len(candidate) < 10 and not LayoutAnalyzer._looks_like_sentence_text(candidate):
-                if not LayoutAnalyzer._looks_like_short_critical_clause_line(candidate):
+            if len(candidate) < 10 and not candidate_sentence_like:
+                if not candidate_short_critical:
                     return False
             min_width = min(bbox.width, candidate_bbox.width)
             max_width = max(bbox.width, candidate_bbox.width, 1.0)
             width_ratio = min_width / max_width
             x0_delta = abs(bbox.x0 - candidate_bbox.x0)
-            x0_ok = x0_delta <= max(20.0, min_width * 0.12)
-            width_ok = width_ratio >= 0.72
-            gap_ok = -4.0 <= gap <= max(56.0, min(bbox.height, candidate_bbox.height) * 2.20)
-            return x0_ok and width_ok and gap_ok
+            overlap = max(0.0, min(bbox.x1, candidate_bbox.x1) - max(bbox.x0, candidate_bbox.x0))
+            overlap_ratio = overlap / max(min_width, 1.0)
+            x0_ok = x0_delta <= max(26.0, min_width * 0.16)
+            width_ok = width_ratio >= 0.70
+            overlap_ok = overlap_ratio >= 0.72
+            gap_ok = -4.0 <= gap <= max(64.0, min(bbox.height, candidate_bbox.height) * 2.80)
+            return x0_ok and width_ok and overlap_ok and gap_ok
 
         prev_ok = _compatible_neighbor(prev_text, prev_bbox, bbox.y0 - prev_bbox.y1) if prev_bbox is not None else False
         next_ok = _compatible_neighbor(next_text, next_bbox, next_bbox.y0 - bbox.y1) if next_bbox is not None else False
         if prev_ok and next_ok:
             return True
         if prev_ok or next_ok:
-            near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
-            return near_margin or len(text) >= 18 or is_short_critical
+            near_margin = bbox.y1 <= page_height * 0.15 or bbox.y0 >= page_height * 0.84
+            return near_margin and (sentence_like or is_short_critical or continuation_shape)
         return False
 
     @staticmethod
@@ -521,6 +556,10 @@ class LayoutAnalyzer:
             return False
         compact = re.sub(r"\s+", "", normalized)
         if len(compact) > 36:
+            return False
+        if compact[0] in {"の", "て", "に", "を", "が", "で", "と", "も"}:
+            return False
+        if len(compact) <= 18 and compact[-1] in {"の", "て", "に", "を", "が", "で", "と", "、", "，", "-", "〜", "~"}:
             return False
         if is_annotation_like_text(compact) or is_page_number_text(compact):
             return False
@@ -591,49 +630,87 @@ class LayoutAnalyzer:
         ascii_alnum = sum(1 for ch in text if ch.isascii() and ch.isalnum())
         kana_kanji = sum(1 for ch in text if ("\u3040" <= ch <= "\u30FF") or ("\u4E00" <= ch <= "\u9FFF"))
         katakana = sum(1 for ch in text if "\u30A0" <= ch <= "\u30FF")
+        sentence_like = LayoutAnalyzer._looks_like_sentence_text(text)
         starts_with_particle = text[0] in {"の", "て", "に", "を", "が", "で", "と", "も"}
-        ends_with_fragment = text[-1] in {"の", "て", "に", "を", "が", "で", "と", "、", "，", "-", "〜", "~"}
+        starts_with_connective = any(
+            text.startswith(prefix)
+            for prefix in ["及び", "および", "又は", "または", "並びに", "ならびに", "ただし", "但し"]
+        )
+        ends_with_fragment = text[-1] in {"の", "て", "に", "を", "が", "で", "と", "、", "，", "-", "〜", "~", "し", "る"}
+        has_terminal_punct = any(token in text for token in ["。", ".", "；", ";", "！", "!", "？", "?"])
+        has_predicate = any(
+            token in text for token in ["する", "した", "して", "され", "でき", "ます", "です", "もの", "こと", "とする", "である"]
+        )
+        ocr_noise_like = len(text) <= 18 and katakana >= 2 and (ascii_alnum + symbol_like) >= 3
+        ascii_heavy = len(text) <= 12 and ascii_alnum >= max(3, int(len(text) * 0.6)) and kana_kanji <= 2
+        fragment_score = 0
+        if starts_with_particle:
+            fragment_score += 2
+        if starts_with_connective and len(text) <= 18:
+            fragment_score += 1
+        if ends_with_fragment and not has_terminal_punct:
+            fragment_score += 1
+        if len(text) <= 18 and not sentence_like:
+            fragment_score += 1
+        if len(text) <= 16 and not has_predicate:
+            fragment_score += 1
+        if symbol_like >= 2:
+            fragment_score += 1
+        if ascii_heavy:
+            fragment_score += 1
+        if ocr_noise_like:
+            fragment_score += 1
         if len(text) <= 10 and symbol_like >= 2:
             return True
-        if len(text) <= 12 and ascii_alnum >= max(3, int(len(text) * 0.6)) and kana_kanji <= 2:
+        if ascii_heavy:
             return True
         if len(text) <= 8 and symbol_like >= 1 and kana_kanji <= 2:
             return True
-        if len(text) <= 14 and katakana >= 2 and ascii_alnum >= 2 and symbol_like >= 1:
+        if ocr_noise_like:
             return True
-        if len(text) <= 16 and (starts_with_particle or ends_with_fragment):
-            if not LayoutAnalyzer._looks_like_sentence_text(text):
-                return True
-        if has_legal_marker and len(text) <= 16 and (starts_with_particle or ends_with_fragment):
+        if has_legal_marker and LayoutAnalyzer._looks_like_short_critical_clause_line(text):
+            return False
+        if has_legal_marker and len(text) <= 20 and fragment_score >= 3:
             return True
-        if has_legal_marker and len(text) <= 8 and not LayoutAnalyzer._looks_like_sentence_text(text):
+        if fragment_score >= 3 and len(text) <= 20:
+            return True
+        if fragment_score >= 4 and len(text) <= 28 and not sentence_like:
             return True
         return False
 
     @staticmethod
     def _is_signature_like_text(text: str, bbox: BBox, page_height: float) -> bool:
-        if any(token in text for token in ["記名押印", "署名欄", "押印", "捺印", "㊞"]):
-            return True
-        if "署名" in text and len(text) <= 20 and not LayoutAnalyzer._looks_like_sentence_text(text):
-            return True
+        sentence_like = LayoutAnalyzer._looks_like_sentence_text(text)
+        if len(text) >= 18 and sentence_like:
+            return False
+        has_signature_terms = any(token in text for token in ["記名押印", "署名欄", "捺印"])
+        has_stamp = "㊞" in text or ("押印" in text and len(text) <= 40)
+        has_signature_word = "署名" in text
+        if len(text) > 72:
+            return False
         near_bottom = page_height >= 700.0 and bbox.y0 >= page_height * 0.72
         if not near_bottom:
-            return False
-        if len(text) >= 18 and LayoutAnalyzer._looks_like_sentence_text(text):
-            return False
-        if len(text) > 64:
-            return False
+            return (has_signature_terms or has_stamp) and len(text) <= 40 and not sentence_like
         has_party = any(token in text for token in ["甲", "乙"])
         has_company = any(token in text for token in ["株式会社", "合同会社", "有限会社"])
         has_label = any(token in text for token in ["住所", "氏名", "代表者", "署名日", "会社名"])
         has_date = "年月日" in text or ("年" in text and "月" in text and "日" in text and len(text) <= 24)
-        has_signature_delimiter = any(token in text for token in [":", "：", "㊞", "印", "（", "）", "(", ")"])
+        has_signature_delimiter = any(token in text for token in [":", "：", "㊞", "（", "）", "(", ")"])
+        structured_short = len(text) <= 48
+        if sentence_like and len(text) >= 14:
+            return False
+        if (has_signature_terms or has_stamp) and structured_short and not sentence_like:
+            return True
+        if has_signature_word and len(text) <= 18 and not sentence_like and (has_signature_delimiter or has_label):
+            return True
+        if has_party and has_company and (has_signature_delimiter or has_date) and structured_short:
+            return True
+        if has_label and has_signature_delimiter and (has_party or has_company or has_date) and structured_short:
+            return True
         cues = int(has_party) + int(has_company) + int(has_label) + int(has_date) + int(has_signature_delimiter)
-        if has_party and has_company and has_signature_delimiter:
+        if structured_short and not sentence_like and cues >= 4:
             return True
-        if has_label and has_signature_delimiter and (has_party or has_company or has_date):
-            return True
-        return cues >= 4
+        return False
 
     @staticmethod
     def _image_regions(page: fitz.Page, page_no: int) -> list[LayoutRegion]:
@@ -735,7 +812,18 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
         and not LayoutAnalyzer._looks_like_sentence_text(normalized)
     ):
         return BlockType.FOOTER
-    if any(token in normalized for token in ["署名", "記名押印", "署名欄"]):
+    if (
+        any(token in normalized for token in ["記名押印", "署名欄"])
+        and len(normalized) <= 40
+        and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+    ):
+        return BlockType.SIGNATURE_AREA
+    if (
+        "署名" in normalized
+        and len(normalized) <= 18
+        and bbox.y0 >= page_height * 0.70
+        and not LayoutAnalyzer._looks_like_sentence_text(normalized)
+    ):
         return BlockType.SIGNATURE_AREA
     if any(token in normalized for token in ["印", "捺印", "印影"]):
         return BlockType.STAMP_AREA

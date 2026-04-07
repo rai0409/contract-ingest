@@ -85,13 +85,27 @@ class ClauseSplitter:
         section_boundary_uncertain_count = 0
         tail_restart_pending = False
 
-        for block in ordered:
+        for block_idx, block in enumerate(ordered):
             raw_text = str(block.text)
-            for segment in self._split_embedded_headings(raw_text):
+            segments = self._split_embedded_headings(raw_text)
+
+            for seg_idx, segment in enumerate(segments):
                 text = normalize_text(segment)
                 if not text:
                     continue
                 text = self._collapse_duplicate_heading_like_fragment(text)
+                next_text_hint: str | None = None
+                if seg_idx + 1 < len(segments):
+                    next_text_hint = self._collapse_duplicate_heading_like_fragment(normalize_text(segments[seg_idx + 1]))
+                else:
+                    for look_ahead in range(block_idx + 1, min(len(ordered), block_idx + 4)):
+                        for next_segment in self._split_embedded_headings(str(ordered[look_ahead].text)):
+                            next_text = self._collapse_duplicate_heading_like_fragment(normalize_text(next_segment))
+                            if next_text and next_text != text:
+                                next_text_hint = next_text
+                                break
+                        if next_text_hint is not None:
+                            break
 
                 heading = self._detect_heading(text)
                 section_type = self._infer_section_type(
@@ -104,6 +118,7 @@ class ClauseSplitter:
                     text=text,
                     block=block,
                     current=current,
+                    next_text=next_text_hint,
                 ):
                     section_type = SectionType.MAIN_CONTRACT
                 if self._is_tail_restart_marker(text):
@@ -381,21 +396,75 @@ class ClauseSplitter:
         text: str,
         block: EvidenceBlock,
         current: _ClauseDraft | None,
+        next_text: str | None = None,
     ) -> bool:
         if current is None or current.section_type != SectionType.MAIN_CONTRACT:
             return False
-        if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA, BlockType.TABLE, BlockType.IMAGE}:
+        if block.block_type in {BlockType.TABLE, BlockType.IMAGE}:
             return False
         normalized = normalize_text(text)
         if not normalized:
             return False
         marker = _NUMBERED_CONTINUATION_HEAD_RE.match(normalized)
-        if marker is None:
-            return False
-        body = normalize_text(normalized[marker.end() :])
+        body = normalize_text(normalized[marker.end() :]) if marker is not None else normalized
         if len(body) < 8:
             return False
+        if marker is None:
+            next_continuation = normalize_text(next_text or "")
+            if not next_continuation:
+                return False
+            # Narrow follow-up rescue: allow local prose continuation even when
+            # neighboring text includes form/article tokens, but only with explicit
+            # in-sentence continuity cues (e.g. この場合 / 前項 / 第n項).
+            continuity_cue = bool(
+                re.search(r"(?:この場合|前項|前号|次項|次号|同項|同号|当該|第[0-9０-９一二三四五六七八九十百千〇零]+項)", f"{body} {next_continuation}")
+            )
+            next_looks_prose = (
+                bool(re.search(r"(?:は、|を|が|に|ものとする|しなければ|できる|場合|とき|による)", next_continuation))
+                and not re.match(r"^\s*様式", next_continuation)
+            )
+            if _EXECUTION_SIGNATURE_SIGNAL_RE.search(body):
+                return False
+            if _SIGNATURE_SIGNAL_RE.search(body) and any(token in body for token in ["記名押印", "署名欄", "押印欄", "記名", "㊞", "電子署名"]):
+                return False
+            if (_FORM_SIGNAL_RE.search(next_continuation) or _INSTRUCTION_SIGNAL_RE.search(next_continuation)) and not (
+                continuity_cue and next_looks_prose
+            ):
+                return False
+            if re.search(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", next_continuation) and not (
+                continuity_cue and body.endswith(("。", "．", "、", "，"))
+            ):
+                return False
+            if re.search(r"(?:記名押印|署名欄|押印欄|㊞|甲\s*[:：]|乙\s*[:：]|住所\s*[:：]|氏名\s*[:：]|代表者\s*[:：])", body):
+                return False
+            prose_markers = ("は、", "は", "を", "が", "に", "ものとする", "しなければ", "できる", "場合", "とき", "による")
+            if not any(marker in body for marker in prose_markers):
+                return False
+            if _FORM_SIGNAL_RE.search(body):
+                prose_form_markers = ("は、", "を", "が", "ものとする", "しなければ", "できる", "場合", "とき")
+                if not any(marker in body for marker in prose_form_markers):
+                    return False
+            return True
+        if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
+            if body.endswith(("。", "．", ":", "：", ";", "；")):
+                return False
+            next_continuation = normalize_text(next_text or "")
+            if not next_continuation:
+                return False
+            if _FORM_SIGNAL_RE.search(next_continuation) or _INSTRUCTION_SIGNAL_RE.search(next_continuation):
+                return False
+            if re.search(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", next_continuation):
+                return False
+            if re.search(r"(?:甲\s*[:：]|乙\s*[:：]|住所\s*[:：]|氏名\s*[:：]|代表者\s*[:：]|記名押印|署名欄|押印欄|㊞)", next_continuation):
+                return False
+            body_tail = body.endswith(("に", "へ", "を", "が", "と", "で", "は", "の"))
+            next_head = next_continuation.startswith(("を", "に", "が", "と", "で", "は", "の", "し"))
+            kanji_bridge = bool(re.search(r"[一-龥]$", body) and re.match(r"^[一-龥]", next_continuation))
+            if not (body_tail or next_head or kanji_bridge):
+                return False
         if _INSTRUCTION_SIGNAL_RE.search(body) or _TAIL_FORM_SIGNAL_RE.search(body):
+            return False
+        if re.search(r"(?:甲\s*[:：]|乙\s*[:：]|住所\s*[:：]|氏名\s*[:：]|代表者\s*[:：])", body):
             return False
         if _SIGNATURE_SIGNAL_RE.search(body) and any(token in body for token in ["記名押印", "署名欄", "押印欄", "記名", "㊞"]):
             return False
@@ -422,6 +491,16 @@ class ClauseSplitter:
             return False
         if heading[0].startswith("第") and ClauseSplitter._is_probable_in_body_article_reference(heading_text):
             return False
+        if heading[0].startswith("第") and current is not None and current.section_type == SectionType.MAIN_CONTRACT:
+            compact_heading = re.sub(r"\s+", "", normalize_text(heading_text))
+            context = normalize_text(" ".join(current.text_parts[-2:]))
+            has_definition_cue = any(token in context for token in ("とは", "をいう", "以下「", "に相当する権利"))
+            looks_reference_tail = (
+                ("から第" in compact_heading or "まで" in compact_heading)
+                and any(token in compact_heading for token in ("規定する", "をいう", "に相当する権利", "以下「"))
+            )
+            if has_definition_cue and looks_reference_tail and heading[1] is None and len(compact_heading) > 16:
+                return False
         if heading[1] is None and len(heading_text) <= 6 and not block.searchable and not heading[0].startswith("第"):
             return False
         current_number = parse_article_number(heading[0])

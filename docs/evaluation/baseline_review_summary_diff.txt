@@ -1,0 +1,194 @@
+--- baseline_review_summary.txt	2026-04-04 21:08:40.031279508 +0900
++++ baseline_review_summary_after_layout_fix.txt	2026-04-04 22:12:48.486203794 +0900
+@@ -1,4 +1,4 @@
+-===== runs/baseline_eval_current_modified/2-4himitsuhozikeiyakusyo =====
++===== runs/baseline_eval_after_layout_fix/2-4himitsuhozikeiyakusyo =====
+ {
+   "doc_id": "2-4himitsuhozikeiyakusyo",
+   "review_required": true,
+@@ -9,12 +9,13 @@
+       "reason_codes": [
+         "PARTIAL_EXTRACTION_FAILURE"
+       ],
+-      "message": "一部領域で抽出欠損があります。 (weak native block OCR fallback was rejected) 対応方針: 欠損領域を原本照合して補完してください。",
++      "message": "一部領域で抽出欠損があります。 (OCR returned no text for target region) 対応方針: 欠損領域を原本照合して補完してください。",
+       "page_refs": [
+         3
+       ],
+       "block_ids": [
+-        "p3_n003"
++        "p3_n003",
++        "p3_n022"
+       ],
+       "field_names": [],
+       "field": null,
+@@ -36,7 +37,8 @@
+           3
+         ],
+         "block_ids": [
+-          "p3_n003"
++          "p3_n003",
++          "p3_n022"
+         ]
+       },
+       "suggested_fix": "欠損領域を原本照合して補完してください。"
+@@ -229,13 +231,51 @@
+     "compare_ready": false
+   }
+ }
+-===== runs/baseline_eval_current_modified/4_keiyakusyo =====
++===== runs/baseline_eval_after_layout_fix/4_keiyakusyo =====
+ {
+   "doc_id": "4_keiyakusyo",
+   "review_required": true,
+   "items": [
+     {
+       "review_id": "rev_0001",
++      "level": "info",
++      "reason_codes": [
++        "PARTIAL_EXTRACTION_FAILURE"
++      ],
++      "message": "一部領域で抽出欠損があります。 (weak native block OCR fallback was rejected) 対応方針: 欠損領域を原本照合して補完してください。",
++      "page_refs": [
++        5
++      ],
++      "block_ids": [
++        "p5_n037"
++      ],
++      "field_names": [],
++      "field": null,
++      "candidate_value": null,
++      "why_rejected": null,
++      "page": 5,
++      "bbox": null,
++      "snippet": null,
++      "confidence": null,
++      "suggested_action": "欠損領域を原本照合して補完してください。",
++      "type": "PARTIAL_EXTRACTION_FAILURE",
++      "severity": "low",
++      "evidence": {
++        "candidate_value": null,
++        "why_rejected": null,
++        "snippet": null,
++        "bbox": null,
++        "page_refs": [
++          5
++        ],
++        "block_ids": [
++          "p5_n037"
++        ]
++      },
++      "suggested_fix": "欠損領域を原本照合して補完してください。"
++    },
++    {
++      "review_id": "rev_0002",
+       "level": "warning",
+       "reason_codes": [
+         "SECTION_BOUNDARY_UNCERTAIN"
+@@ -265,7 +305,7 @@
+       "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+     },
+     {
+-      "review_id": "rev_0002",
++      "review_id": "rev_0003",
+       "level": "warning",
+       "reason_codes": [
+         "PARTIAL_COUNTERPARTY"
+@@ -319,7 +359,7 @@
+       "suggested_fix": "当事者候補から断片を除外し法人名を確定してください。"
+     },
+     {
+-      "review_id": "rev_0003",
++      "review_id": "rev_0004",
+       "level": "warning",
+       "reason_codes": [
+         "MISSING_GOVERNING_LAW"
+@@ -351,7 +391,7 @@
+       "suggested_fix": "準拠法条項を確認し補完してください。"
+     },
+     {
+-      "review_id": "rev_0004",
++      "review_id": "rev_0005",
+       "level": "warning",
+       "reason_codes": [
+         "MISSING_JURISDICTION"
+@@ -383,7 +423,7 @@
+       "suggested_fix": "管轄条項を確認し補完してください。"
+     },
+     {
+-      "review_id": "rev_0005",
++      "review_id": "rev_0006",
+       "level": "warning",
+       "reason_codes": [
+         "ANCHOR_ONLY_EFFECTIVE_DATE"
+@@ -438,11 +478,11 @@
+     "critical_count": 0,
+     "high_count": 1,
+     "medium_count": 3,
+-    "low_count": 1,
++    "low_count": 2,
+     "compare_ready": false
+   }
+ }
+-===== runs/baseline_eval_current_modified/gyoumu-k230101 =====
++===== runs/baseline_eval_after_layout_fix/gyoumu-k230101 =====
+ {
+   "doc_id": "gyoumu-k230101",
+   "review_required": true,
+@@ -602,7 +642,7 @@
+     "compare_ready": false
+   }
+ }
+-===== runs/baseline_eval_current_modified/kagawa_itaku =====
++===== runs/baseline_eval_after_layout_fix/kagawa_itaku =====
+ {
+   "doc_id": "kagawa_itaku",
+   "review_required": true,
+@@ -711,7 +751,7 @@
+     "compare_ready": false
+   }
+ }
+-===== runs/baseline_eval_current_modified/nda_hinagata_2020 =====
++===== runs/baseline_eval_after_layout_fix/nda_hinagata_2020 =====
+ {
+   "doc_id": "nda_hinagata_2020",
+   "review_required": true,
+@@ -855,10 +895,10 @@
+       "why_rejected": "validated_expiration_date_placeholder",
+       "page": 3,
+       "bbox": {
+-        "x0": 85.08000183105469,
+-        "y0": 123.15956115722656,
+-        "x1": 153.40562438964844,
+-        "y1": 133.71994018554688
++        "x0": 106.08000183105469,
++        "y0": 124.15956115722656,
++        "x1": 256.0800018310547,
++        "y1": 154.15956115722656
+       },
+       "snippet": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+       "confidence": 0.62,
+@@ -870,10 +910,10 @@
+         "why_rejected": "validated_expiration_date_placeholder",
+         "snippet": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+         "bbox": {
+-          "x0": 85.08000183105469,
+-          "y0": 123.15956115722656,
+-          "x1": 153.40562438964844,
+-          "y1": 133.71994018554688
++          "x0": 106.08000183105469,
++          "y0": 124.15956115722656,
++          "x1": 256.0800018310547,
++          "y1": 154.15956115722656
+         },
+         "page_refs": [
+           3
+@@ -957,7 +997,7 @@
+     "compare_ready": false
+   }
+ }
+-===== runs/baseline_eval_current_modified/usp_itaku =====
++===== runs/baseline_eval_after_layout_fix/usp_itaku =====
+ {
+   "doc_id": "usp_itaku",
+   "review_required": true,
