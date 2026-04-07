@@ -1,0 +1,1246 @@
+===== runs/baseline_eval_current_modified/2-4himitsuhozikeiyakusyo =====
+{
+  "doc_id": "2-4himitsuhozikeiyakusyo",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "info",
+      "reason_codes": [
+        "PARTIAL_EXTRACTION_FAILURE"
+      ],
+      "message": "一部領域で抽出欠損があります。 (weak native block OCR fallback was rejected) 対応方針: 欠損領域を原本照合して補完してください。",
+      "page_refs": [
+        3
+      ],
+      "block_ids": [
+        "p3_n003"
+      ],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": 3,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "欠損領域を原本照合して補完してください。",
+      "type": "PARTIAL_EXTRACTION_FAILURE",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [
+          3
+        ],
+        "block_ids": [
+          "p3_n003"
+        ]
+      },
+      "suggested_fix": "欠損領域を原本照合して補完してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "PARTIAL_COUNTERPARTY"
+      ],
+      "message": "当事者候補に部分断片が含まれています。 (counterparty candidate contains partial fragments) 対応方針: 当事者候補から断片を除外し法人名を確定してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b002"
+      ],
+      "field_names": [
+        "counterparties"
+      ],
+      "field": "counterparties",
+      "candidate_value": [
+        "公益財団法人沖縄県国際交流・人材育成財団"
+      ],
+      "why_rejected": "validated_counterparties",
+      "page": 1,
+      "bbox": {
+        "x0": 56.66400146484375,
+        "y0": 109.4566421508789,
+        "x1": 538.4199829101562,
+        "y1": 171.1365966796875
+      },
+      "snippet": "['公益財団法人沖縄県国際交流・人材育成財団']",
+      "confidence": 0.76,
+      "suggested_action": "当事者候補から断片を除外し法人名を確定してください。",
+      "type": "PARTIAL_COUNTERPARTY",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": [
+          "公益財団法人沖縄県国際交流・人材育成財団"
+        ],
+        "why_rejected": "validated_counterparties",
+        "snippet": "['公益財団法人沖縄県国際交流・人材育成財団']",
+        "bbox": {
+          "x0": 56.66400146484375,
+          "y0": 109.4566421508789,
+          "x1": 538.4199829101562,
+          "y1": 171.1365966796875
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b002"
+        ]
+      },
+      "suggested_fix": "当事者候補から断片を除外し法人名を確定してください。"
+    },
+    {
+      "review_id": "rev_0004",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_EXPIRATION_DATE"
+      ],
+      "message": "終了日を抽出できませんでした。 (required field is missing: expiration_date) 対応方針: 契約期間条項から終了日を補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "expiration_date"
+      ],
+      "field": "expiration_date",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "契約期間条項から終了日を補完してください。",
+      "type": "MISSING_EXPIRATION_DATE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "契約期間条項から終了日を補完してください。"
+    },
+    {
+      "review_id": "rev_0005",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_CONFIDENCE"
+      ],
+      "message": "低信頼度の抽出結果が含まれます。 (low confidence field: effective_date) 対応方針: 該当blockの原文と抽出値を目視確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "effective_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": 0.6,
+      "suggested_action": "該当blockの原文と抽出値を目視確認してください。",
+      "type": "LOW_CONFIDENCE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当blockの原文と抽出値を目視確認してください。"
+    },
+    {
+      "review_id": "rev_0006",
+      "level": "info",
+      "reason_codes": [
+        "PDF_CLASSIFICATION_AMBIGUOUS"
+      ],
+      "message": "確認が必要な抽出シグナルがあります。 (document contains mixed page kinds and is treated as hybrid) 対応方針: 該当箇所を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "該当箇所を確認してください。",
+      "type": "PDF_CLASSIFICATION_AMBIGUOUS",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当箇所を確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 4,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 3,
+    "low_count": 2,
+    "compare_ready": false
+  }
+}
+===== runs/baseline_eval_current_modified/4_keiyakusyo =====
+{
+  "doc_id": "4_keiyakusyo",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "PARTIAL_COUNTERPARTY"
+      ],
+      "message": "当事者候補に部分断片が含まれています。 (counterparty candidate contains partial fragments) 対応方針: 当事者候補から断片を除外し法人名を確定してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b002"
+      ],
+      "field_names": [
+        "counterparties"
+      ],
+      "field": "counterparties",
+      "candidate_value": [
+        "公立大学法人福島県立医科大学"
+      ],
+      "why_rejected": "validated_counterparties",
+      "page": 1,
+      "bbox": {
+        "x0": 62.3990478515625,
+        "y0": 96.37635803222656,
+        "x1": 535.09423828125,
+        "y1": 142.9459991455078
+      },
+      "snippet": "['公立大学法人福島県立医科大学']",
+      "confidence": 0.76,
+      "suggested_action": "当事者候補から断片を除外し法人名を確定してください。",
+      "type": "PARTIAL_COUNTERPARTY",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": [
+          "公立大学法人福島県立医科大学"
+        ],
+        "why_rejected": "validated_counterparties",
+        "snippet": "['公立大学法人福島県立医科大学']",
+        "bbox": {
+          "x0": 62.3990478515625,
+          "y0": 96.37635803222656,
+          "x1": 535.09423828125,
+          "y1": 142.9459991455078
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b002"
+        ]
+      },
+      "suggested_fix": "当事者候補から断片を除外し法人名を確定してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_GOVERNING_LAW"
+      ],
+      "message": "準拠法を抽出できませんでした。 (required field is missing: governing_law) 対応方針: 準拠法条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "governing_law"
+      ],
+      "field": "governing_law",
+      "candidate_value": null,
+      "why_rejected": "source_not_explicit_governing_law",
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "準拠法条項を確認し補完してください。",
+      "type": "MISSING_GOVERNING_LAW",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": "source_not_explicit_governing_law",
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "準拠法条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0004",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_JURISDICTION"
+      ],
+      "message": "管轄裁判所を抽出できませんでした。 (required field is missing: jurisdiction) 対応方針: 管轄条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "jurisdiction"
+      ],
+      "field": "jurisdiction",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "管轄条項を確認し補完してください。",
+      "type": "MISSING_JURISDICTION",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "管轄条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0005",
+      "level": "warning",
+      "reason_codes": [
+        "ANCHOR_ONLY_EFFECTIVE_DATE"
+      ],
+      "message": "効力発生日が締結日アンカー表現のみです。 (effective_date candidate is anchor-only and requires review) 対応方針: 締結日アンカーのため実日付が必要か確認してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b010"
+      ],
+      "field_names": [
+        "effective_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": "契約締結日から",
+      "why_rejected": "validated_effective_date_anchor_only",
+      "page": 1,
+      "bbox": {
+        "x0": 62.38846969604492,
+        "y0": 402.4581604003906,
+        "x1": 456.3821105957031,
+        "y1": 413.0181884765625
+      },
+      "snippet": "契約締結日から",
+      "confidence": 0.72,
+      "suggested_action": "締結日アンカーのため実日付が必要か確認してください。",
+      "type": "ANCHOR_ONLY_EFFECTIVE_DATE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": "契約締結日から",
+        "why_rejected": "validated_effective_date_anchor_only",
+        "snippet": "契約締結日から",
+        "bbox": {
+          "x0": 62.38846969604492,
+          "y0": 402.4581604003906,
+          "x1": 456.3821105957031,
+          "y1": 413.0181884765625
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b010"
+        ]
+      },
+      "suggested_fix": "締結日アンカーのため実日付が必要か確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 5,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 3,
+    "low_count": 1,
+    "compare_ready": false
+  }
+}
+===== runs/baseline_eval_current_modified/gyoumu-k230101 =====
+{
+  "doc_id": "gyoumu-k230101",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_GOVERNING_LAW"
+      ],
+      "message": "準拠法を抽出できませんでした。 (required field is missing: governing_law) 対応方針: 準拠法条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "governing_law"
+      ],
+      "field": "governing_law",
+      "candidate_value": null,
+      "why_rejected": "source_not_explicit_governing_law",
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "準拠法条項を確認し補完してください。",
+      "type": "MISSING_GOVERNING_LAW",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": "source_not_explicit_governing_law",
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "準拠法条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_QUALITY_EXPIRATION_DATE"
+      ],
+      "message": "終了日候補が低品質です。 (expiration_date candidate is low quality) 対応方針: 終了日条項を確認し絶対日付か相対期間かを補完してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b007"
+      ],
+      "field_names": [
+        "expiration_date"
+      ],
+      "field": "expiration_date",
+      "candidate_value": "令和○○年○○月○○日から令和○○年○○月○○日まで",
+      "why_rejected": "validated_expiration_date_placeholder",
+      "page": 1,
+      "bbox": {
+        "x0": 70.86032104492188,
+        "y0": 341.2828674316406,
+        "x1": 532.8280029296875,
+        "y1": 352.2606506347656
+      },
+      "snippet": "令和○○年○○月○○日から令和○○年○○月○○日まで",
+      "confidence": 0.62,
+      "suggested_action": "終了日条項を確認し絶対日付か相対期間かを補完してください。",
+      "type": "LOW_QUALITY_EXPIRATION_DATE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": "令和○○年○○月○○日から令和○○年○○月○○日まで",
+        "why_rejected": "validated_expiration_date_placeholder",
+        "snippet": "令和○○年○○月○○日から令和○○年○○月○○日まで",
+        "bbox": {
+          "x0": 70.86032104492188,
+          "y0": 341.2828674316406,
+          "x1": 532.8280029296875,
+          "y1": 352.2606506347656
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b007"
+        ]
+      },
+      "suggested_fix": "終了日条項を確認し絶対日付か相対期間かを補完してください。"
+    },
+    {
+      "review_id": "rev_0004",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_CONFIDENCE"
+      ],
+      "message": "低信頼度の抽出結果が含まれます。 (low confidence field: effective_date) 対応方針: 該当blockの原文と抽出値を目視確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "effective_date",
+        "expiration_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": 0.6,
+      "suggested_action": "該当blockの原文と抽出値を目視確認してください。",
+      "type": "LOW_CONFIDENCE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当blockの原文と抽出値を目視確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 4,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 2,
+    "low_count": 1,
+    "compare_ready": false
+  }
+}
+===== runs/baseline_eval_current_modified/kagawa_itaku =====
+{
+  "doc_id": "kagawa_itaku",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_GOVERNING_LAW"
+      ],
+      "message": "準拠法を抽出できませんでした。 (required field is missing: governing_law) 対応方針: 準拠法条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "governing_law"
+      ],
+      "field": "governing_law",
+      "candidate_value": null,
+      "why_rejected": "source_not_explicit_governing_law",
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "準拠法条項を確認し補完してください。",
+      "type": "MISSING_GOVERNING_LAW",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": "source_not_explicit_governing_law",
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "準拠法条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_CONFIDENCE"
+      ],
+      "message": "低信頼度の抽出結果が含まれます。 (low confidence field: effective_date) 対応方針: 該当blockの原文と抽出値を目視確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "effective_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": 0.6,
+      "suggested_action": "該当blockの原文と抽出値を目視確認してください。",
+      "type": "LOW_CONFIDENCE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当blockの原文と抽出値を目視確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 3,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 1,
+    "low_count": 1,
+    "compare_ready": false
+  }
+}
+===== runs/baseline_eval_current_modified/nda_hinagata_2020 =====
+{
+  "doc_id": "nda_hinagata_2020",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "PARTIAL_COUNTERPARTY"
+      ],
+      "message": "当事者候補に部分断片が含まれています。 (counterparty candidate contains partial fragments) 対応方針: 当事者候補から断片を除外し法人名を確定してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b003"
+      ],
+      "field_names": [
+        "counterparties"
+      ],
+      "field": "counterparties",
+      "candidate_value": [
+        "国立研究開発法人産業技術総合研究所",
+        "○○株式会社"
+      ],
+      "why_rejected": "validated_counterparties",
+      "page": 1,
+      "bbox": {
+        "x0": 85.08000183105469,
+        "y0": 143.9195556640625,
+        "x1": 510.45196533203125,
+        "y1": 226.4799346923828
+      },
+      "snippet": "['国立研究開発法人産業技術総合研究所', '○○株式会社']",
+      "confidence": 0.9,
+      "suggested_action": "当事者候補から断片を除外し法人名を確定してください。",
+      "type": "PARTIAL_COUNTERPARTY",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": [
+          "国立研究開発法人産業技術総合研究所",
+          "○○株式会社"
+        ],
+        "why_rejected": "validated_counterparties",
+        "snippet": "['国立研究開発法人産業技術総合研究所', '○○株式会社']",
+        "bbox": {
+          "x0": 85.08000183105469,
+          "y0": 143.9195556640625,
+          "x1": 510.45196533203125,
+          "y1": 226.4799346923828
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b003"
+        ]
+      },
+      "suggested_fix": "当事者候補から断片を除外し法人名を確定してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_GOVERNING_LAW"
+      ],
+      "message": "準拠法を抽出できませんでした。 (required field is missing: governing_law) 対応方針: 準拠法条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "governing_law"
+      ],
+      "field": "governing_law",
+      "candidate_value": null,
+      "why_rejected": "source_not_explicit_governing_law",
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "準拠法条項を確認し補完してください。",
+      "type": "MISSING_GOVERNING_LAW",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": "source_not_explicit_governing_law",
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "準拠法条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0004",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_QUALITY_EXPIRATION_DATE"
+      ],
+      "message": "終了日候補が低品質です。 (expiration_date candidate is low quality) 対応方針: 終了日条項を確認し絶対日付か相対期間かを補完してください。",
+      "page_refs": [
+        3
+      ],
+      "block_ids": [
+        "p3_b002"
+      ],
+      "field_names": [
+        "expiration_date"
+      ],
+      "field": "expiration_date",
+      "candidate_value": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+      "why_rejected": "validated_expiration_date_placeholder",
+      "page": 3,
+      "bbox": {
+        "x0": 85.08000183105469,
+        "y0": 123.15956115722656,
+        "x1": 153.40562438964844,
+        "y1": 133.71994018554688
+      },
+      "snippet": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+      "confidence": 0.62,
+      "suggested_action": "終了日条項を確認し絶対日付か相対期間かを補完してください。",
+      "type": "LOW_QUALITY_EXPIRATION_DATE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+        "why_rejected": "validated_expiration_date_placeholder",
+        "snippet": "契約期間)第9条本契約の有効期間は、令和○○年○○月○○日から次の各号のうちいずれか早く到来する日まで",
+        "bbox": {
+          "x0": 85.08000183105469,
+          "y0": 123.15956115722656,
+          "x1": 153.40562438964844,
+          "y1": 133.71994018554688
+        },
+        "page_refs": [
+          3
+        ],
+        "block_ids": [
+          "p3_b002"
+        ]
+      },
+      "suggested_fix": "終了日条項を確認し絶対日付か相対期間かを補完してください。"
+    },
+    {
+      "review_id": "rev_0005",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_CONFIDENCE"
+      ],
+      "message": "低信頼度の抽出結果が含まれます。 (low confidence field: effective_date) 対応方針: 該当blockの原文と抽出値を目視確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "effective_date",
+        "expiration_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": 0.6,
+      "suggested_action": "該当blockの原文と抽出値を目視確認してください。",
+      "type": "LOW_CONFIDENCE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当blockの原文と抽出値を目視確認してください。"
+    },
+    {
+      "review_id": "rev_0006",
+      "level": "info",
+      "reason_codes": [
+        "PDF_CLASSIFICATION_AMBIGUOUS"
+      ],
+      "message": "確認が必要な抽出シグナルがあります。 (document contains mixed page kinds and is treated as hybrid) 対応方針: 該当箇所を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "該当箇所を確認してください。",
+      "type": "PDF_CLASSIFICATION_AMBIGUOUS",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当箇所を確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 5,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 3,
+    "low_count": 2,
+    "compare_ready": false
+  }
+}
+===== runs/baseline_eval_current_modified/usp_itaku =====
+{
+  "doc_id": "usp_itaku",
+  "review_required": true,
+  "items": [
+    {
+      "review_id": "rev_0001",
+      "level": "info",
+      "reason_codes": [
+        "PARTIAL_EXTRACTION_FAILURE"
+      ],
+      "message": "一部領域で抽出欠損があります。 (weak native block had no OCR fallback result) 対応方針: 欠損領域を原本照合して補完してください。",
+      "page_refs": [
+        6,
+        9,
+        10
+      ],
+      "block_ids": [
+        "p10_n001",
+        "p10_n021",
+        "p6_n004",
+        "p9_n001"
+      ],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": 6,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "欠損領域を原本照合して補完してください。",
+      "type": "PARTIAL_EXTRACTION_FAILURE",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [
+          6,
+          9,
+          10
+        ],
+        "block_ids": [
+          "p10_n001",
+          "p10_n021",
+          "p6_n004",
+          "p9_n001"
+        ]
+      },
+      "suggested_fix": "欠損領域を原本照合して補完してください。"
+    },
+    {
+      "review_id": "rev_0002",
+      "level": "warning",
+      "reason_codes": [
+        "LOW_QUALITY_JURISDICTION"
+      ],
+      "message": "管轄裁判所候補が低品質です。 (jurisdiction candidate was rejected by quality gate) 対応方針: 裁判所名の完全表記を確認して補正してください。",
+      "page_refs": [
+        3
+      ],
+      "block_ids": [
+        "p3_b003"
+      ],
+      "field_names": [
+        "jurisdiction"
+      ],
+      "field": "jurisdiction",
+      "candidate_value": "甲の所在地を管轄する裁判所",
+      "why_rejected": "relative_jurisdiction_expression",
+      "page": 3,
+      "bbox": {
+        "x0": 85.4500732421875,
+        "y0": 764.7952270507812,
+        "x1": 523.83349609375,
+        "y1": 787.7131958007812
+      },
+      "snippet": "甲の所在地を管轄する裁判所",
+      "confidence": 0.94,
+      "suggested_action": "裁判所名の完全表記を確認して補正してください。",
+      "type": "LOW_QUALITY_JURISDICTION",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": "甲の所在地を管轄する裁判所",
+        "why_rejected": "relative_jurisdiction_expression",
+        "snippet": "甲の所在地を管轄する裁判所",
+        "bbox": {
+          "x0": 85.4500732421875,
+          "y0": 764.7952270507812,
+          "x1": 523.83349609375,
+          "y1": 787.7131958007812
+        },
+        "page_refs": [
+          3
+        ],
+        "block_ids": [
+          "p3_b003"
+        ]
+      },
+      "suggested_fix": "裁判所名の完全表記を確認して補正してください。"
+    },
+    {
+      "review_id": "rev_0003",
+      "level": "warning",
+      "reason_codes": [
+        "SECTION_BOUNDARY_UNCERTAIN"
+      ],
+      "message": "セクション境界の判定が不安定です。 (section boundary required heuristic fallback) 対応方針: 前文・本文・別紙・様式の境界を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "前文・本文・別紙・様式の境界を確認してください。",
+      "type": "SECTION_BOUNDARY_UNCERTAIN",
+      "severity": "high",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "前文・本文・別紙・様式の境界を確認してください。"
+    },
+    {
+      "review_id": "rev_0004",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_GOVERNING_LAW"
+      ],
+      "message": "準拠法を抽出できませんでした。 (required field is missing: governing_law) 対応方針: 準拠法条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "governing_law"
+      ],
+      "field": "governing_law",
+      "candidate_value": null,
+      "why_rejected": "source_not_explicit_governing_law",
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "準拠法条項を確認し補完してください。",
+      "type": "MISSING_GOVERNING_LAW",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": "source_not_explicit_governing_law",
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "準拠法条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0005",
+      "level": "warning",
+      "reason_codes": [
+        "MISSING_JURISDICTION"
+      ],
+      "message": "管轄裁判所を抽出できませんでした。 (required field is missing: jurisdiction) 対応方針: 管轄条項を確認し補完してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [
+        "jurisdiction"
+      ],
+      "field": "jurisdiction",
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "管轄条項を確認し補完してください。",
+      "type": "MISSING_JURISDICTION",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "管轄条項を確認し補完してください。"
+    },
+    {
+      "review_id": "rev_0006",
+      "level": "warning",
+      "reason_codes": [
+        "ANCHOR_ONLY_EFFECTIVE_DATE"
+      ],
+      "message": "効力発生日が締結日アンカー表現のみです。 (effective_date candidate is anchor-only and requires review) 対応方針: 締結日アンカーのため実日付が必要か確認してください。",
+      "page_refs": [
+        1
+      ],
+      "block_ids": [
+        "p1_b002"
+      ],
+      "field_names": [
+        "effective_date"
+      ],
+      "field": "effective_date",
+      "candidate_value": "契約締結日から",
+      "why_rejected": "validated_effective_date_anchor_only",
+      "page": 1,
+      "bbox": {
+        "x0": 70.91999816894531,
+        "y0": 286.8479309082031,
+        "x1": 428.91778564453125,
+        "y1": 322.8499755859375
+      },
+      "snippet": "契約締結日から",
+      "confidence": 0.72,
+      "suggested_action": "締結日アンカーのため実日付が必要か確認してください。",
+      "type": "ANCHOR_ONLY_EFFECTIVE_DATE",
+      "severity": "medium",
+      "evidence": {
+        "candidate_value": "契約締結日から",
+        "why_rejected": "validated_effective_date_anchor_only",
+        "snippet": "契約締結日から",
+        "bbox": {
+          "x0": 70.91999816894531,
+          "y0": 286.8479309082031,
+          "x1": 428.91778564453125,
+          "y1": 322.8499755859375
+        },
+        "page_refs": [
+          1
+        ],
+        "block_ids": [
+          "p1_b002"
+        ]
+      },
+      "suggested_fix": "締結日アンカーのため実日付が必要か確認してください。"
+    },
+    {
+      "review_id": "rev_0007",
+      "level": "info",
+      "reason_codes": [
+        "PDF_CLASSIFICATION_AMBIGUOUS"
+      ],
+      "message": "確認が必要な抽出シグナルがあります。 (document contains mixed page kinds and is treated as hybrid) 対応方針: 該当箇所を確認してください。",
+      "page_refs": [],
+      "block_ids": [],
+      "field_names": [],
+      "field": null,
+      "candidate_value": null,
+      "why_rejected": null,
+      "page": null,
+      "bbox": null,
+      "snippet": null,
+      "confidence": null,
+      "suggested_action": "該当箇所を確認してください。",
+      "type": "PDF_CLASSIFICATION_AMBIGUOUS",
+      "severity": "low",
+      "evidence": {
+        "candidate_value": null,
+        "why_rejected": null,
+        "snippet": null,
+        "bbox": null,
+        "page_refs": [],
+        "block_ids": []
+      },
+      "suggested_fix": "該当箇所を確認してください。"
+    }
+  ],
+  "summary": {
+    "warning_count": 5,
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 3,
+    "low_count": 3,
+    "compare_ready": false
+  }
+}

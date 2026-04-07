@@ -443,6 +443,37 @@ def test_clause_splitter_rescues_numbered_prose_continuation_from_signature_misc
     assert all(clause.section_type.value != "signature" for clause in result.clauses if clause.clause_no == "第41条")
 
 
+def test_clause_splitter_rescues_page24_style_local_prose_continuation_from_signature_and_form() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第24条（成果報告書・中間年報の提出）乙は成果報告書を提出する。"),
+        _make_block(
+            2,
+            "印刷・製本された成果報告書を甲に提出することができる。この場合においても、",
+            block_type=BlockType.SIGNATURE_AREA,
+        ),
+        _make_block(
+            3,
+            "要約書は電子ファイル化されたものを提出しなければならない。"
+            "第1項に規定する様式第10による委託業務成果報告届出書とともに提出する。",
+        ),
+        _make_block(4, "第25条（知的財産）知的財産の取扱いを定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    clause24 = next(clause for clause in result.clauses if clause.clause_no == "第24条")
+    related_clauses = [
+        clause for clause in result.clauses if "印刷・製本された成果報告書" in clause.text or "要約書は電子ファイル化されたもの" in clause.text
+    ]
+
+    assert clause24.section_type.value == "main_contract"
+    assert "印刷・製本された成果報告書を甲に提出することができる。この場合においても、" in clause24.text
+    assert "要約書は電子ファイル化されたものを提出しなければならない。" in clause24.text
+    assert len(related_clauses) == 1
+    assert related_clauses[0].clause_no == "第24条"
+    assert all(clause.section_type.value == "main_contract" for clause in related_clauses)
+
+
 def test_clause_splitter_keeps_article_reference_chain_inside_parent_clause() -> None:
     splitter = ClauseSplitter()
     blocks = [

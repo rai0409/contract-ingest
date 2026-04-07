@@ -368,3 +368,41 @@ def test_layout_weak_native_regions_keep_short_japanese_legal_markers_for_ocr_re
     region_ids = {region.source_block_id for region in regions}
 
     assert {"n100", "n101", "n102", "n103"} <= region_ids
+
+
+def test_layout_drops_legal_marker_fragment_when_clause_shape_is_truncated() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="の契約締結日",
+        bbox=BBox(14.0, 430.0, 180.0, 452.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type("の契約締結日", BBox(14.0, 430.0, 180.0, 452.0), page_height=1000.0)
+
+    assert role == "annotation"
+    assert inferred == BlockType.OTHER
+
+
+def test_layout_does_not_mark_long_signature_word_sentence_as_signature_area() -> None:
+    text = "当事者は本契約に基づく署名手続の進行状況を確認し、必要な説明資料を互いに提出するものとする。"
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=BBox(10.0, 790.0, 580.0, 836.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(text, BBox(10.0, 790.0, 580.0, 836.0), page_height=1000.0)
+
+    assert role == "body"
+    assert inferred == BlockType.TEXT
+
+
+def test_layout_right_side_repeated_margin_text_prefers_annotation() -> None:
+    role = LayoutAnalyzer._classify_text_role(
+        text="オプション条項",
+        bbox=BBox(500.0, 328.0, 570.0, 344.0),
+        page_height=1000.0,
+        repeated_margin_texts={"オプション条項"},
+    )
+
+    assert role == "annotation"
