@@ -490,3 +490,62 @@ def test_clause_splitter_keeps_article_reference_chain_inside_parent_clause() ->
     assert clause_nos.count("第11条") == 1
     assert clause_nos.count("第3条") == 0
     assert "第3条、第19条、第20条第3項及び第75号)の規定により" in clause10.text
+
+
+def test_clause_splitter_section_boundary_uncertain_details_include_signature_breakdown() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条（目的）本契約の目的を定める。"),
+        _make_block(2, "住所 東京都千代田区"),
+        _make_block(3, "当事者は本契約を誠実に履行する。"),
+    ]
+
+    result = splitter.split(blocks)
+    issue = next(issue for issue in result.issues if issue.reason_code == ReasonCode.SECTION_BOUNDARY_UNCERTAIN)
+    details = issue.details
+    category_counts = details.get("category_counts", {})
+    samples = details.get("samples", [])
+
+    assert details.get("boundary_count", 0) >= 1
+    assert category_counts.get("signature_boundary", 0) >= 1
+    assert any(
+        sample.get("from_section_type") == "signature" and sample.get("to_section_type") == "main_contract"
+        for sample in samples
+        if isinstance(sample, dict)
+    )
+
+
+def test_clause_splitter_section_boundary_uncertain_details_include_form_instruction_breakdown() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条（目的）本契約の目的を定める。"),
+        _make_block(2, "様式第1号 請求書"),
+        _make_block(3, "委託料の支払条件は別途定める。"),
+    ]
+
+    result = splitter.split(blocks)
+    issue = next(issue for issue in result.issues if issue.reason_code == ReasonCode.SECTION_BOUNDARY_UNCERTAIN)
+    category_counts = issue.details.get("category_counts", {})
+    samples = issue.details.get("samples", [])
+
+    assert category_counts.get("form_or_instruction_boundary", 0) >= 1
+    assert any(
+        sample.get("from_section_type") in {"form", "instruction"} and sample.get("to_section_type") == "main_contract"
+        for sample in samples
+        if isinstance(sample, dict)
+    )
+
+
+def test_clause_splitter_section_boundary_uncertain_details_include_tail_restart_breakdown() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第8条 甲は成果物を提出する。"),
+        _make_block(2, "業務委託契約約款"),
+        _make_block(3, "当事者は誠実に協議する。"),
+    ]
+
+    result = splitter.split(blocks)
+    issue = next(issue for issue in result.issues if issue.reason_code == ReasonCode.SECTION_BOUNDARY_UNCERTAIN)
+    category_counts = issue.details.get("category_counts", {})
+
+    assert category_counts.get("tail_restart_boundary", 0) >= 1

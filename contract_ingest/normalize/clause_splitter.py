@@ -82,7 +82,16 @@ class ClauseSplitter:
         previous_article_number: int | None = None
         pending_next_clause_title: tuple[str, EvidenceBlock, str] | None = None
         seen_article_heading = False
-        section_boundary_uncertain_count = 0
+        section_boundary_uncertain_total = 0
+        section_boundary_uncertain_by_category: dict[str, int] = {
+            "appendix_boundary": 0,
+            "form_or_instruction_boundary": 0,
+            "signature_boundary": 0,
+            "tail_restart_boundary": 0,
+            "other_boundary": 0,
+        }
+        section_boundary_uncertain_transitions: dict[str, int] = {}
+        section_boundary_uncertain_samples: list[dict[str, str]] = []
         tail_restart_pending = False
 
         for block_idx, block in enumerate(ordered):
@@ -164,7 +173,29 @@ class ClauseSplitter:
                         and block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}
                     )
                     if not strong_boundary:
-                        section_boundary_uncertain_count += 1
+                        category = self._classify_uncertain_boundary_category(
+                            from_section_type=current.section_type,
+                            to_section_type=section_type,
+                            trigger_text=text,
+                            tail_restart_pending=tail_restart_pending,
+                        )
+                        section_boundary_uncertain_total += 1
+                        section_boundary_uncertain_by_category[category] = (
+                            section_boundary_uncertain_by_category.get(category, 0) + 1
+                        )
+                        transition_key = f"{current.section_type.value}->{section_type.value}"
+                        section_boundary_uncertain_transitions[transition_key] = (
+                            section_boundary_uncertain_transitions.get(transition_key, 0) + 1
+                        )
+                        if len(section_boundary_uncertain_samples) < 5:
+                            section_boundary_uncertain_samples.append(
+                                {
+                                    "category": category,
+                                    "from_section_type": current.section_type.value,
+                                    "to_section_type": section_type.value,
+                                    "snippet": self._boundary_trigger_snippet(text),
+                                }
+                            )
                     current = None
                     expecting_title_line = False
 
@@ -281,16 +312,63 @@ class ClauseSplitter:
 
         clauses = self._postprocess_clauses(clauses)
         issues = self._evaluate_stability(clauses)
-        if section_boundary_uncertain_count > 0:
+        if section_boundary_uncertain_total > 0:
+            details: dict[str, object] = {
+                "boundary_count": section_boundary_uncertain_total,
+                "category_counts": {
+                    "appendix_boundary": section_boundary_uncertain_by_category.get("appendix_boundary", 0),
+                    "form_or_instruction_boundary": section_boundary_uncertain_by_category.get(
+                        "form_or_instruction_boundary",
+                        0,
+                    ),
+                    "signature_boundary": section_boundary_uncertain_by_category.get("signature_boundary", 0),
+                    "tail_restart_boundary": section_boundary_uncertain_by_category.get("tail_restart_boundary", 0),
+                    "other_boundary": section_boundary_uncertain_by_category.get("other_boundary", 0),
+                },
+                "transition_counts": {
+                    key: section_boundary_uncertain_transitions[key]
+                    for key in sorted(section_boundary_uncertain_transitions)
+                },
+            }
+            if section_boundary_uncertain_samples:
+                details["samples"] = section_boundary_uncertain_samples
             issues.append(
                 ProcessingIssue(
                     severity=ErrorSeverity.REVIEW,
                     reason_code=ReasonCode.SECTION_BOUNDARY_UNCERTAIN,
                     message="section boundary required heuristic fallback",
-                    details={"boundary_count": section_boundary_uncertain_count},
+                    details=details,
                 )
             )
         return ClauseSplitResult(clauses=clauses, issues=issues)
+
+    @staticmethod
+    def _classify_uncertain_boundary_category(
+        from_section_type: SectionType,
+        to_section_type: SectionType,
+        trigger_text: str,
+        *,
+        tail_restart_pending: bool = False,
+    ) -> str:
+        if tail_restart_pending or ClauseSplitter._is_tail_restart_marker(trigger_text):
+            return "tail_restart_boundary"
+        if SectionType.SIGNATURE in {from_section_type, to_section_type}:
+            return "signature_boundary"
+        if (
+            from_section_type in {SectionType.FORM, SectionType.INSTRUCTION}
+            or to_section_type in {SectionType.FORM, SectionType.INSTRUCTION}
+        ):
+            return "form_or_instruction_boundary"
+        if SectionType.APPENDIX in {from_section_type, to_section_type}:
+            return "appendix_boundary"
+        return "other_boundary"
+
+    @staticmethod
+    def _boundary_trigger_snippet(text: str, max_chars: int = 80) -> str:
+        normalized = normalize_text(text)
+        if len(normalized) <= max_chars:
+            return normalized
+        return f"{normalized[:max_chars].rstrip()}..."
 
     @staticmethod
     def _split_embedded_headings(text: str) -> list[str]:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contract_ingest.domain.enums import BlockType, ExtractMethod, ReasonCode
+from contract_ingest.domain.enums import BlockType, ExtractMethod, ReasonCode, SectionType
 from contract_ingest.domain.models import BBox, ClauseUnit, EvidenceBlock, EvidenceRef
 from contract_ingest.normalize.field_extractor import ContractFieldExtractor
 
@@ -29,7 +29,14 @@ def _make_block(
     )
 
 
-def _make_clause(block: EvidenceBlock, clause_no: str, clause_title: str | None, text: str) -> ClauseUnit:
+def _make_clause(
+    block: EvidenceBlock,
+    clause_no: str,
+    clause_title: str | None,
+    text: str,
+    *,
+    section_type: SectionType = SectionType.MAIN_CONTRACT,
+) -> ClauseUnit:
     return ClauseUnit(
         clause_id=f"clause_{clause_no}",
         clause_no=clause_no,
@@ -48,6 +55,7 @@ def _make_clause(block: EvidenceBlock, clause_no: str, clause_title: str | None,
             )
         ],
         flags=[],
+        section_type=section_type,
     )
 
 
@@ -653,3 +661,56 @@ def test_field_extractor_recovers_blank_placeholder_effective_date_from_signatur
 
     assert result.fields.effective_date.value == "年 月 日"
     assert "semantic_type:placeholder_term" in result.fields.effective_date.flags
+
+
+def test_field_extractor_prefers_main_contract_clause_candidates_for_target_fields() -> None:
+    extractor = ContractFieldExtractor()
+    appendix_law = _make_block(1, "別紙1（準拠法）準拠法 ニューヨーク州法")
+    form_jurisdiction = _make_block(2, "様式第1号 東京地方裁判所を第一審の専属的合意管轄裁判所とする。")
+    appendix_period = _make_block(3, "別紙2（契約期間）契約期間は、2027年1月1日から2027年12月31日までとする。")
+    main_law = _make_block(10, "第10条（準拠法）準拠法 日本法")
+    main_jurisdiction = _make_block(11, "第11条（管轄）福岡地方裁判所を第一審の専属的合意管轄裁判所とする。")
+    main_effective = _make_block(12, "第12条（効力発生日）効力発生日は2025年4月1日とする。")
+    main_period = _make_block(13, "第13条（契約期間）契約期間は、2025年4月1日から2026年3月31日までとする。")
+    blocks = [
+        appendix_law,
+        form_jurisdiction,
+        appendix_period,
+        main_law,
+        main_jurisdiction,
+        main_effective,
+        main_period,
+    ]
+    clauses = [
+        _make_clause(appendix_law, "別紙1", "準拠法", appendix_law.text, section_type=SectionType.APPENDIX),
+        _make_clause(form_jurisdiction, "様式第1号", "管轄", form_jurisdiction.text, section_type=SectionType.FORM),
+        _make_clause(appendix_period, "別紙2", "契約期間", appendix_period.text, section_type=SectionType.APPENDIX),
+        _make_clause(main_law, "第10条", "準拠法", main_law.text),
+        _make_clause(main_jurisdiction, "第11条", "管轄", main_jurisdiction.text),
+        _make_clause(main_effective, "第12条", "効力発生日", main_effective.text),
+        _make_clause(main_period, "第13条", "契約期間", main_period.text),
+    ]
+
+    result = extractor.extract(blocks, clauses=clauses)
+
+    assert result.fields.governing_law.value == "日本法"
+    assert result.fields.jurisdiction.value == "福岡地方裁判所"
+    assert result.fields.effective_date.value == "2025-04-01"
+    assert result.fields.expiration_date.value == "2026-03-31"
+
+
+def test_field_extractor_keeps_placeholder_expiration_date_reviewable() -> None:
+    extractor = ContractFieldExtractor()
+    period_block = _make_block(1, "第3条（契約期間）契約期間は、令和○○年○○月○○日から令和○○年○○月○○日までとする。")
+    clauses = [_make_clause(period_block, "第3条", "契約期間", period_block.text)]
+
+    result = extractor.extract([period_block], clauses=clauses)
+    reason_codes = {
+        issue.reason_code.value if hasattr(issue.reason_code, "value") else str(issue.reason_code)
+        for issue in result.issues
+    }
+
+    assert result.fields.expiration_date.value is not None
+    assert "令和○○年○○月○○日" in str(result.fields.expiration_date.value)
+    assert "semantic_type:placeholder_term" in result.fields.expiration_date.flags
+    assert ReasonCode.LOW_QUALITY_EXPIRATION_DATE.value in reason_codes
