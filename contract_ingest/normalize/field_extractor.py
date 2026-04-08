@@ -5,7 +5,7 @@ import re
 from typing import Callable
 
 from contract_ingest.config import Settings, get_settings
-from contract_ingest.domain.enums import ErrorSeverity, ReasonCode
+from contract_ingest.domain.enums import ErrorSeverity, ReasonCode, SectionType
 from contract_ingest.domain.models import (
     ClauseUnit,
     ContractFields,
@@ -85,8 +85,8 @@ class ContractFieldExtractor:
 
         contract_type = self._extract_contract_type(ordered_blocks)
         counterparties = self._extract_counterparties(ordered_blocks)
-        effective_date = self._extract_effective_date(ordered_blocks)
-        expiration_date = self._extract_expiration_date(ordered_blocks)
+        effective_date = self._extract_effective_date(ordered_blocks, clauses=clauses)
+        expiration_date = self._extract_expiration_date(ordered_blocks, clauses=clauses)
         auto_renewal = self._extract_auto_renewal(ordered_blocks)
         termination_notice_period = self._extract_termination_notice_period(ordered_blocks)
         governing_law = self._extract_governing_law(ordered_blocks, clauses)
@@ -495,7 +495,24 @@ class ContractFieldExtractor:
             flags=["signature_execution_date"],
         )
 
-    def _extract_effective_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
+    def _extract_effective_date(
+        self,
+        blocks: list[EvidenceBlock],
+        clauses: list[ClauseUnit] | None = None,
+    ) -> ExtractedField:
+        clause_keywords = (
+            "契約締結日",
+            "契約締結の日",
+            "効力発生日",
+            "発効日",
+            "effective date",
+            "execution date",
+            "dated as of",
+            "有効期間",
+            "契約期間",
+            "委託期間",
+            "履行期間",
+        )
         patterns = [
             re.compile(rf"(?:効力発生日|発効日|契約締結日|契約日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
             re.compile(rf"(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*(?:より|から)\s*(?:効力|発効|開始)"),
@@ -508,9 +525,17 @@ class ContractFieldExtractor:
             reason="matched_effective_date_rule",
             missing_reason="rule_no_match_effective_date",
             allow_fallback_absolute=False,
+            clauses=clauses,
+            clause_keywords=clause_keywords,
         )
         if absolute.value is not None:
             return absolute
+
+        scoped_texts = self._iter_field_scopes(
+            blocks=blocks,
+            clauses=clauses,
+            clause_keywords=clause_keywords,
+        )
 
         english_absolute_patterns = [
             re.compile(
@@ -524,8 +549,8 @@ class ContractFieldExtractor:
                 re.IGNORECASE,
             ),
         ]
-        for block in blocks:
-            text = normalize_text(block.text)
+        for scope_text, scope_ref, _ in scoped_texts:
+            text = normalize_text(scope_text)
             for pattern in english_absolute_patterns:
                 match = pattern.search(text)
                 if not match:
@@ -539,15 +564,15 @@ class ContractFieldExtractor:
                     value=iso,
                     confidence=0.90,
                     reason="matched_effective_date_rule",
-                    evidence_refs=[self._to_ref(block)],
+                    evidence_refs=[scope_ref],
                 )
 
         relative_pattern = re.compile(
             r"(?P<expr>(?:本契約|効力|発効)[^。\n]{0,40}(?:契約締結日|契約締結の日|締結日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間)"
         )
 
-        for block in blocks:
-            text = normalize_text(block.text)
+        for scope_text, scope_ref, _ in scoped_texts:
+            text = normalize_text(scope_text)
             match = relative_pattern.search(text)
             if not match:
                 continue
@@ -556,7 +581,7 @@ class ContractFieldExtractor:
                 value=normalize_text(match.group("expr")).replace("契約締結の日", "契約締結日"),
                 confidence=0.66,
                 reason="matched_relative_effective_period_rule",
-                evidence_refs=[self._to_ref(block)],
+                evidence_refs=[scope_ref],
                 flags=["relative_period_only"],
             )
 
@@ -569,8 +594,8 @@ class ContractFieldExtractor:
         )
         anchor_refs: list[EvidenceRef] = []
         anchor_value: str | None = None
-        for block in blocks:
-            text = normalize_text(block.text)
+        for scope_text, scope_ref, _ in scoped_texts:
+            text = normalize_text(scope_text)
             match = anchor_pattern.search(text)
             if not match:
                 english_match = english_anchor_pattern.search(text)
@@ -578,11 +603,11 @@ class ContractFieldExtractor:
                     continue
                 if anchor_value is None:
                     anchor_value = normalize_text(english_match.group("anchor")).lower()
-                anchor_refs.append(self._to_ref(block))
+                anchor_refs.append(scope_ref)
                 continue
             if anchor_value is None:
                 anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
-            anchor_refs.append(self._to_ref(block))
+            anchor_refs.append(scope_ref)
 
         if anchor_refs and anchor_value is not None:
             return ExtractedField(
@@ -622,8 +647,8 @@ class ContractFieldExtractor:
             re.compile(r"委託期間\s*(?P<date>年\s*月\s*日)\s*から"),
             re.compile(r"有効期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
         ]
-        for block in blocks:
-            text = normalize_text(block.text)
+        for scope_text, scope_ref, _ in scoped_texts:
+            text = normalize_text(scope_text)
             for pattern in period_clause_patterns:
                 match = pattern.search(text)
                 if not match:
@@ -637,7 +662,7 @@ class ContractFieldExtractor:
                     value=normalized_date,
                     confidence=0.64,
                     reason="matched_effective_date_period_clause_fallback",
-                    evidence_refs=[self._to_ref(block)],
+                    evidence_refs=[scope_ref],
                     flags=["period_clause_fallback"],
                 )
 
@@ -1090,7 +1115,11 @@ class ContractFieldExtractor:
             return False
         return _PARTY_PLACEHOLDER_NAME_RE.fullmatch(compact) is not None
 
-    def _extract_expiration_date(self, blocks: list[EvidenceBlock]) -> ExtractedField:
+    def _extract_expiration_date(
+        self,
+        blocks: list[EvidenceBlock],
+        clauses: list[ClauseUnit] | None = None,
+    ) -> ExtractedField:
         patterns = [
             re.compile(rf"(?:満了日|契約終了日|終了日)\s*[:：]?\s*(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})"),
             re.compile(rf"(?:有効期間|契約期間)[^。\n]{0,80}?(?P<date>{_ABSOLUTE_DATE_TOKEN_PATTERN})\s*まで"),
@@ -1111,6 +1140,18 @@ class ContractFieldExtractor:
             relative_patterns=relative_patterns,
             relative_reason="matched_relative_expiration_period_rule",
             allow_fallback_absolute=True,
+            clauses=clauses,
+            clause_keywords=(
+                "有効期間",
+                "契約期間",
+                "委託期間",
+                "履行期間",
+                "終了日",
+                "満了日",
+                "expiration",
+                "termination",
+                "until",
+            ),
         )
 
     def _extract_auto_renewal(self, blocks: list[EvidenceBlock]) -> ExtractedField:
@@ -1370,12 +1411,24 @@ class ContractFieldExtractor:
         blocks: list[EvidenceBlock],
         clauses: list[ClauseUnit] | None,
         clause_keywords: tuple[str, ...],
+        *,
+        include_block_scopes: bool = True,
     ) -> list[tuple[str, EvidenceRef, bool]]:
         scopes: list[tuple[str, EvidenceRef, bool]] = []
+        excluded_section_types = {
+            SectionType.APPENDIX,
+            SectionType.FORM,
+            SectionType.INSTRUCTION,
+            SectionType.SIGNATURE,
+        }
+        excluded_block_ids: set[str] = set()
         if clauses:
+            for clause in clauses:
+                if clause.section_type in excluded_section_types:
+                    excluded_block_ids.update(clause.block_ids)
             tail_start = max(0, len(clauses) - 5)
             prioritized_clauses = sorted(
-                enumerate(clauses),
+                [(idx, clause) for idx, clause in enumerate(clauses) if clause.section_type not in excluded_section_types],
                 key=lambda item: (
                     -self._clause_priority(item[1], clause_keywords),
                     -(1 if item[0] >= tail_start else 0),
@@ -1388,8 +1441,12 @@ class ContractFieldExtractor:
                 clause_related = self._clause_priority(clause, clause_keywords) > 0.0
                 scopes.append((clause.text, clause.evidence_refs[0], clause_related))
 
-        for block in blocks:
-            scopes.append((block.text, self._to_ref(block), False))
+        if include_block_scopes:
+            candidate_blocks = [block for block in blocks if block.block_id not in excluded_block_ids]
+            if not candidate_blocks:
+                candidate_blocks = list(blocks)
+            for block in candidate_blocks:
+                scopes.append((block.text, self._to_ref(block), False))
         return scopes
 
     def _detect_relative_jurisdiction_expression(
@@ -1481,12 +1538,14 @@ class ContractFieldExtractor:
         title_compact = re.sub(r"\s+", "", title_text)
         body_compact = re.sub(r"\s+", "", body_text)
         score = 0.0
+        if clause.section_type == SectionType.MAIN_CONTRACT:
+            score += 0.7
+        elif clause.section_type in {SectionType.APPENDIX, SectionType.FORM, SectionType.INSTRUCTION, SectionType.SIGNATURE}:
+            score -= 0.7
         if any(keyword in title_text or re.sub(r"\s+", "", keyword) in title_compact for keyword in keywords):
             score += 1.0
         if any(keyword in body_text or re.sub(r"\s+", "", keyword) in body_compact for keyword in keywords):
             score += 0.3
-        if clause.clause_no in {"附則", "別紙", "別表"}:
-            score += 0.2
         return score
 
     @staticmethod
@@ -1511,11 +1570,22 @@ class ContractFieldExtractor:
         relative_patterns: list[re.Pattern[str]] | None = None,
         relative_reason: str | None = None,
         allow_fallback_absolute: bool = False,
+        clauses: list[ClauseUnit] | None = None,
+        clause_keywords: tuple[str, ...] | None = None,
     ) -> ExtractedField:
         relative_refs: list[EvidenceRef] = []
+        scopes: list[tuple[str, EvidenceRef, bool]]
+        if clause_keywords is not None:
+            scopes = self._iter_field_scopes(
+                blocks=blocks,
+                clauses=clauses,
+                clause_keywords=clause_keywords,
+            )
+        else:
+            scopes = [(block.text, self._to_ref(block), False) for block in blocks]
 
-        for block in blocks:
-            text = normalize_text(block.text)
+        for scope_text, scope_ref, _ in scopes:
+            text = normalize_text(scope_text)
             sentences = self._split_clause_sentences(text)
             for sentence in sentences:
                 for pattern in patterns:
@@ -1531,10 +1601,36 @@ class ContractFieldExtractor:
                         value=iso,
                         confidence=0.93,
                         reason=reason,
-                        evidence_refs=[self._to_ref(block)],
+                        evidence_refs=[scope_ref],
                     )
 
                 if allow_fallback_absolute:
+                    if field_name == "expiration_date" and not any(
+                        token in sentence
+                        for token in [
+                            "有効期間",
+                            "契約期間",
+                            "委託期間",
+                            "履行期間",
+                            "満了",
+                            "終了",
+                            "まで",
+                            "expiration",
+                            "termination",
+                            "until",
+                        ]
+                    ):
+                        continue
+                    if field_name == "expiration_date":
+                        fallback_expiration = self._last_absolute_date(sentence)
+                        if fallback_expiration is not None:
+                            return ExtractedField(
+                                field_name=field_name,
+                                value=fallback_expiration,
+                                confidence=0.82,
+                                reason=f"{reason}_fallback",
+                                evidence_refs=[scope_ref],
+                            )
                     fallback = self._first_absolute_date(sentence)
                     if fallback is not None:
                         return ExtractedField(
@@ -1542,13 +1638,13 @@ class ContractFieldExtractor:
                             value=fallback,
                             confidence=0.82,
                             reason=f"{reason}_fallback",
-                            evidence_refs=[self._to_ref(block)],
+                            evidence_refs=[scope_ref],
                         )
 
             if relative_patterns is not None and relative_reason is not None:
                 for relative_pattern in relative_patterns:
                     if relative_pattern.search(text):
-                        relative_refs.append(self._to_ref(block))
+                        relative_refs.append(scope_ref)
                         break
 
         if relative_refs and relative_reason is not None:
@@ -1589,6 +1685,16 @@ class ContractFieldExtractor:
             if iso is not None:
                 return iso
         return None
+
+    @staticmethod
+    def _last_absolute_date(text: str) -> str | None:
+        last_iso: str | None = None
+        for match in _ABSOLUTE_DATE_TOKEN_RE.finditer(text):
+            raw_date = normalize_text(match.group(0))
+            iso = ContractFieldExtractor._normalize_date_token(raw_date)
+            if iso is not None:
+                last_iso = iso
+        return last_iso
 
     @staticmethod
     def _normalize_date_token(raw_date: str) -> str | None:

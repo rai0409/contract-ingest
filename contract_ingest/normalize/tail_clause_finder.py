@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 import re
 
+from contract_ingest.domain.enums import SectionType
 from contract_ingest.domain.models import ClauseUnit, EvidenceBlock, EvidenceRef
 from contract_ingest.utils.text import normalize_digits, normalize_text, unique_preserve_order
 
@@ -39,6 +40,7 @@ def find_tail_governing_law_candidates(
     route: str = "UNKNOWN",
 ) -> list[TailFieldCandidate]:
     candidates: list[TailFieldCandidate] = []
+    excluded_block_ids = _non_main_clause_block_ids(clauses)
     scopes = _combine_scopes(
         _iter_tail_context_scopes(
             blocks,
@@ -54,11 +56,13 @@ def find_tail_governing_law_candidates(
                 "解釈",
                 "紛争には",
             ),
+            excluded_block_ids=excluded_block_ids,
         ),
         _iter_global_heading_scopes(
             blocks,
             trigger_tokens=_GOVERNING_LAW_HEADING_KEYWORDS + ("日本法", "日本国法"),
             require_clause_marker=True,
+            excluded_block_ids=excluded_block_ids,
         ),
     )
     scopes = _combine_scopes(
@@ -68,9 +72,13 @@ def find_tail_governing_law_candidates(
             trigger_tokens=_GOVERNING_LAW_HEADING_KEYWORDS,
             require_clause_marker=False,
             max_scopes=8,
+            excluded_block_ids=excluded_block_ids,
         ),
     )
-    scopes = _combine_scopes(scopes, find_governing_law_clause_spans(blocks, clauses))
+    scopes = _combine_scopes(
+        scopes,
+        find_governing_law_clause_spans(blocks, clauses, excluded_block_ids=excluded_block_ids),
+    )
     for text, ref in scopes:
         compact = _compact(text)
         if "準拠法" not in compact and "日本法" not in compact and "日本国法" not in compact:
@@ -131,16 +139,19 @@ def find_tail_jurisdiction_candidates(
     route: str = "UNKNOWN",
 ) -> list[TailFieldCandidate]:
     candidates: list[TailFieldCandidate] = []
+    excluded_block_ids = _non_main_clause_block_ids(clauses)
     scopes = _combine_scopes(
         _iter_tail_context_scopes(
             blocks,
             clauses,
             trigger_tokens=("裁判所", "管轄", "合意管轄", "第一審", "紛争", "訴え"),
+            excluded_block_ids=excluded_block_ids,
         ),
         _iter_global_heading_scopes(
             blocks,
             trigger_tokens=("管轄", "裁判所", "合意管轄", "第一審"),
             require_clause_marker=True,
+            excluded_block_ids=excluded_block_ids,
         ),
     )
     for text, ref in scopes:
@@ -201,16 +212,19 @@ def find_tail_expiration_candidates(
     route: str = "UNKNOWN",
 ) -> list[TailFieldCandidate]:
     candidates: list[TailFieldCandidate] = []
+    excluded_block_ids = _non_main_clause_block_ids(clauses)
     scopes = _combine_scopes(
         _iter_tail_context_scopes(
             blocks,
             clauses,
             trigger_tokens=("有効期間", "契約期間", "委託期間", "履行期間", "満了", "終了", "更新", "まで", "契約締結"),
+            excluded_block_ids=excluded_block_ids,
         ),
         _iter_global_heading_scopes(
             blocks,
             trigger_tokens=("有効期間", "契約期間", "委託期間", "履行期間", "満了", "更新"),
             require_clause_marker=True,
+            excluded_block_ids=excluded_block_ids,
         ),
     )
     for text, ref in scopes:
@@ -285,16 +299,19 @@ def find_tail_effective_date_candidates(
     route: str = "UNKNOWN",
 ) -> list[TailFieldCandidate]:
     candidates: list[TailFieldCandidate] = []
+    excluded_block_ids = _non_main_clause_block_ids(clauses)
     scopes = _combine_scopes(
         _iter_tail_context_scopes(
             blocks,
             clauses,
             trigger_tokens=("発効", "効力", "契約締結日", "契約締結の日", "締結日", "履行期間"),
+            excluded_block_ids=excluded_block_ids,
         ),
         _iter_global_heading_scopes(
             blocks,
             trigger_tokens=("発効日", "効力発生日", "契約締結日", "契約締結の日", "履行期間"),
             require_clause_marker=True,
+            excluded_block_ids=excluded_block_ids,
         ),
     )
     for text, ref in scopes:
@@ -367,10 +384,15 @@ def find_tail_effective_date_candidates(
 def find_governing_law_clause_spans(
     blocks: list[EvidenceBlock],
     clauses: list[ClauseUnit] | None,
+    *,
+    excluded_block_ids: set[str] | None = None,
 ) -> list[tuple[str, EvidenceRef]]:
+    excluded_ids = excluded_block_ids or set()
     scopes: list[tuple[str, EvidenceRef]] = []
     if clauses:
         for clause in clauses:
+            if _is_non_main_clause_section(clause.section_type):
+                continue
             if not clause.evidence_refs:
                 continue
             title = normalize_text(f"{clause.clause_no or ''} {clause.clause_title or ''}")
@@ -381,6 +403,8 @@ def find_governing_law_clause_spans(
 
     ordered = sorted(blocks, key=lambda b: (b.page, b.bbox.y0, b.bbox.x0))
     for idx, block in enumerate(ordered):
+        if block.block_id in excluded_ids:
+            continue
         compact = _compact(block.text)
         if not _GOVERNING_LAW_HEADING_RE.search(compact):
             continue
@@ -417,16 +441,26 @@ def normalize_governing_law_text(raw_text: str) -> str | None:
     return normalized
 
 
-def _iter_tail_scopes(blocks: list[EvidenceBlock], clauses: list[ClauseUnit] | None) -> list[tuple[str, EvidenceRef]]:
+def _iter_tail_scopes(
+    blocks: list[EvidenceBlock],
+    clauses: list[ClauseUnit] | None,
+    *,
+    excluded_block_ids: set[str] | None = None,
+) -> list[tuple[str, EvidenceRef]]:
+    excluded_ids = excluded_block_ids or set()
     scopes: list[tuple[str, EvidenceRef]] = []
 
     tail_blocks = _tail_blocks(blocks)
     for block in tail_blocks:
+        if block.block_id in excluded_ids:
+            continue
         scopes.append((normalize_text(block.text), _to_ref(block)))
 
     if clauses:
         tail_pages = {block.page for block in tail_blocks}
         for clause in clauses:
+            if _is_non_main_clause_section(clause.section_type):
+                continue
             if clause.page_end not in tail_pages and clause.page_start not in tail_pages:
                 continue
             if not clause.evidence_refs:
@@ -440,12 +474,14 @@ def _iter_tail_context_scopes(
     clauses: list[ClauseUnit] | None,
     *,
     trigger_tokens: tuple[str, ...],
+    excluded_block_ids: set[str] | None = None,
 ) -> list[tuple[str, EvidenceRef]]:
-    scopes = list(_iter_tail_scopes(blocks, clauses))
+    excluded_ids = excluded_block_ids or set()
+    scopes = list(_iter_tail_scopes(blocks, clauses, excluded_block_ids=excluded_ids))
     if not blocks:
         return scopes
 
-    tail_blocks = _tail_blocks(blocks)
+    tail_blocks = [block for block in _tail_blocks(blocks) if block.block_id not in excluded_ids]
     by_page: dict[int, list[EvidenceBlock]] = {}
     for block in tail_blocks:
         by_page.setdefault(block.page, []).append(block)
@@ -479,13 +515,17 @@ def _iter_global_heading_scopes(
     trigger_tokens: tuple[str, ...],
     require_clause_marker: bool,
     max_scopes: int = 12,
+    excluded_block_ids: set[str] | None = None,
 ) -> list[tuple[str, EvidenceRef]]:
+    excluded_ids = excluded_block_ids or set()
     scopes: list[tuple[str, EvidenceRef]] = []
     if not blocks:
         return scopes
 
     ordered = sorted(blocks, key=lambda b: (b.page, b.bbox.y0, b.bbox.x0))
     for idx, block in enumerate(ordered):
+        if block.block_id in excluded_ids:
+            continue
         compact = _compact(block.text)
         if not any(token in compact for token in trigger_tokens):
             continue
@@ -504,6 +544,21 @@ def _iter_global_heading_scopes(
         if len(scopes) >= max_scopes:
             break
     return scopes
+
+
+def _is_non_main_clause_section(section_type: SectionType) -> bool:
+    return section_type in {SectionType.APPENDIX, SectionType.FORM, SectionType.INSTRUCTION, SectionType.SIGNATURE}
+
+
+def _non_main_clause_block_ids(clauses: list[ClauseUnit] | None) -> set[str]:
+    if not clauses:
+        return set()
+    blocked_ids: set[str] = set()
+    for clause in clauses:
+        if not _is_non_main_clause_section(clause.section_type):
+            continue
+        blocked_ids.update(clause.block_ids)
+    return blocked_ids
 
 
 def _combine_scopes(
