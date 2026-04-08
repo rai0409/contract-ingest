@@ -1,31 +1,54 @@
-# contract-ingest
+# Contract PDF Extraction for Japanese Business Documents
 
-Python core for contract PDF ingestion with native-text-first parsing and OCR fallback.
+Extract structured JSON / CSV from business PDFs with native-text-first parsing and OCR fallback.
 
-This project is built for document-heavy workflows where scanned PDFs, layout variance, and extraction precision matter. It focuses on structured extraction from contracts and business documents, especially Japanese-language materials.
+## What this solves
+
+Many document workflows break on scanned PDFs, mixed native/OCR text, unstable layouts, and weak clause recovery.
+
+This project focuses on making extraction from contracts and business PDFs more stable and easier to integrate into downstream review and automation workflows.
+
+## Best fit use cases
+
+- contract review support
+- PDF-to-JSON / CSV extraction
+- OCR-backed business document pipelines
+- structure-aware preprocessing for internal tools
+- Japanese document processing workflows
 
 ## What it does
 
-- Parses contract PDFs with native text extraction first
-- Falls back to OCR when necessary
-- Recovers document structure for downstream extraction workflows
-- Produces outputs suitable for review support and structured processing
+- parses contract PDFs with native text extraction first
+- falls back to OCR when necessary
+- recovers document structure for downstream extraction
+- improves clause and field stability for review-oriented processing
+- produces outputs suitable for JSON / CSV workflows
 
-## Typical use cases
+## Demo
 
-- Contract and business document ingestion
-- OCR fallback for scanned PDFs
-- Structured extraction to JSON / CSV
-- Internal review support workflows
-- Japanese document processing pipelines
+![Input PDF to structured output](docs/images/input_to_output.png)
 
-## Stack
+## Sample output
 
-Python, Pydantic, PyMuPDF, NumPy, PaddleOCR, PaddlePaddle
-
-## Why this repo matters
-
-Many document workflows break on scanned PDFs, inconsistent layouts, or mixed native/OCR text. This project is designed to make document ingestion more reliable and easier to integrate into downstream review and automation systems.
+```json
+{
+  "document_type": "nda",
+  "parties": [
+    "Company A",
+    "Company B"
+  ],
+  "clauses": [
+    {
+      "title": "Confidential Information",
+      "text": "..."
+    },
+    {
+      "title": "Use Restrictions",
+      "text": "..."
+    }
+  ]
+}
+```
 
 ## Quick start
 
@@ -34,12 +57,21 @@ uv sync
 uv run pytest
 ```
 
-Add your project-specific ingestion command or sample script here.
-
 ## Notes
 
 This repository is a good fit for teams that need:
+
 - contract ingestion
 - OCR-backed PDF workflows
 - structure-aware extraction
 - review support before manual approval
+
+## Stack
+
+Python, Pydantic, PyMuPDF, NumPy, PaddleOCR, PaddlePaddle
+
+## License
+
+This repository is source-available for personal study, research, and evaluation.  
+Commercial use requires prior written permission and a separate paid license.  
+See `LICENSE` for details.
