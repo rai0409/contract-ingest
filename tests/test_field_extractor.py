@@ -714,3 +714,44 @@ def test_field_extractor_keeps_placeholder_expiration_date_reviewable() -> None:
     assert "令和○○年○○月○○日" in str(result.fields.expiration_date.value)
     assert "semantic_type:placeholder_term" in result.fields.expiration_date.flags
     assert ReasonCode.LOW_QUALITY_EXPIRATION_DATE.value in reason_codes
+
+
+def test_field_extractor_ranks_semantically_stronger_governing_law_candidate() -> None:
+    extractor = ContractFieldExtractor()
+    generic_law = _make_block(1, "第8条（一般条項）本契約に関する一切の事項は日本国法に従う。")
+    focused_law = _make_block(2, "第9条（準拠法）準拠法 日本法")
+    clauses = [
+        _make_clause(generic_law, "第8条", "一般条項", generic_law.text),
+        _make_clause(focused_law, "第9条", "準拠法", focused_law.text),
+    ]
+
+    result = extractor.extract([generic_law, focused_law], clauses=clauses)
+
+    assert result.fields.governing_law.value == "日本法"
+    assert result.fields.governing_law.evidence_refs[0].block_id == focused_law.block_id
+
+
+def test_field_extractor_ranks_semantically_stronger_jurisdiction_candidate() -> None:
+    extractor = ContractFieldExtractor()
+    generic_jurisdiction = _make_block(1, "第20条（紛争解決）東京地方裁判所を合意管轄裁判所とする。")
+    focused_jurisdiction = _make_block(2, "第21条（管轄）福岡地方裁判所を第一審の専属的合意管轄裁判所とする。")
+    clauses = [
+        _make_clause(generic_jurisdiction, "第20条", "紛争解決", generic_jurisdiction.text),
+        _make_clause(focused_jurisdiction, "第21条", "管轄", focused_jurisdiction.text),
+    ]
+
+    result = extractor.extract([generic_jurisdiction, focused_jurisdiction], clauses=clauses)
+
+    assert result.fields.jurisdiction.value == "福岡地方裁判所"
+    assert result.fields.jurisdiction.evidence_refs[0].block_id == focused_jurisdiction.block_id
+
+
+def test_field_extractor_splits_two_date_sentence_into_effective_and_expiration_roles() -> None:
+    extractor = ContractFieldExtractor()
+    period_block = _make_block(1, "第3条（契約期間）契約期間は、2025年4月1日から2026年3月31日までとする。")
+    clauses = [_make_clause(period_block, "第3条", "契約期間", period_block.text)]
+
+    result = extractor.extract([period_block], clauses=clauses)
+
+    assert result.fields.effective_date.value == "2025-04-01"
+    assert result.fields.expiration_date.value == "2026-03-31"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 import re
 from typing import Callable
@@ -69,6 +70,16 @@ _GOVERNING_LAW_SOURCE_ABSENT_CONTEXT_RE = re.compile(
 )
 _GENERIC_DATE_PLACEHOLDER_RE = re.compile(r"(?:[○◯〇]*\s*年\s*[○◯〇]*\s*月\s*[○◯〇]*\s*日|年\s*月\s*日)")
 _PARTY_PLACEHOLDER_NAME_RE = re.compile(r"^[□■◻◼○◯〇]+$")
+
+
+@dataclass(frozen=True)
+class _FieldScope:
+    text: str
+    ref: EvidenceRef
+    clause_related: bool
+    scope_score: float
+    source_kind: str
+    sequence_index: int
 
 
 class ContractFieldExtractor:
@@ -531,7 +542,7 @@ class ContractFieldExtractor:
         if absolute.value is not None:
             return absolute
 
-        scoped_texts = self._iter_field_scopes(
+        scopes = self._iter_field_scopes(
             blocks=blocks,
             clauses=clauses,
             clause_keywords=clause_keywords,
@@ -549,8 +560,9 @@ class ContractFieldExtractor:
                 re.IGNORECASE,
             ),
         ]
-        for scope_text, scope_ref, _ in scoped_texts:
-            text = normalize_text(scope_text)
+        english_candidates: list[tuple[ExtractedField, float]] = []
+        for scope in scopes:
+            text = normalize_text(scope.text)
             for pattern in english_absolute_patterns:
                 match = pattern.search(text)
                 if not match:
@@ -559,31 +571,59 @@ class ContractFieldExtractor:
                 iso = self._normalize_date_token(raw_date)
                 if iso is None:
                     continue
-                return ExtractedField(
+                candidate = ExtractedField(
                     field_name="effective_date",
                     value=iso,
                     confidence=0.90,
                     reason="matched_effective_date_rule",
-                    evidence_refs=[scope_ref],
+                    evidence_refs=[scope.ref],
                 )
+                score = self._rank_extracted_candidate(
+                    field_name="effective_date",
+                    candidate=candidate,
+                    scope=scope,
+                    sentence_context=text,
+                    validator=validate_effective_date,
+                )
+                score += self._date_role_score(
+                    field_name="effective_date",
+                    sentence=text,
+                    date_value=iso,
+                )
+                english_candidates.append((candidate, score))
+        best_english = self._select_best_scored_candidate(english_candidates)
+        if best_english is not None:
+            return best_english
 
         relative_pattern = re.compile(
             r"(?P<expr>(?:本契約|効力|発効)[^。\n]{0,40}(?:契約締結日|契約締結の日|締結日)[^。\n]{0,24}(?:から|より)[^。\n]{0,24}(?:日|週|か月|ヶ月|ヵ月|年)間)"
         )
 
-        for scope_text, scope_ref, _ in scoped_texts:
-            text = normalize_text(scope_text)
+        relative_candidates: list[tuple[ExtractedField, float]] = []
+        for scope in scopes:
+            text = normalize_text(scope.text)
             match = relative_pattern.search(text)
             if not match:
                 continue
-            return ExtractedField(
+            candidate = ExtractedField(
                 field_name="effective_date",
                 value=normalize_text(match.group("expr")).replace("契約締結の日", "契約締結日"),
                 confidence=0.66,
                 reason="matched_relative_effective_period_rule",
-                evidence_refs=[scope_ref],
+                evidence_refs=[scope.ref],
                 flags=["relative_period_only"],
             )
+            score = self._rank_extracted_candidate(
+                field_name="effective_date",
+                candidate=candidate,
+                scope=scope,
+                sentence_context=text,
+                validator=validate_effective_date,
+            )
+            relative_candidates.append((candidate, score))
+        best_relative = self._select_best_scored_candidate(relative_candidates)
+        if best_relative is not None:
+            return best_relative
 
         anchor_pattern = re.compile(
             r"(?P<anchor>(?:本契約締結日|契約締結日|契約締結の日|締結日)\s*(?:から|より))"
@@ -594,8 +634,8 @@ class ContractFieldExtractor:
         )
         anchor_refs: list[EvidenceRef] = []
         anchor_value: str | None = None
-        for scope_text, scope_ref, _ in scoped_texts:
-            text = normalize_text(scope_text)
+        for scope in scopes:
+            text = normalize_text(scope.text)
             match = anchor_pattern.search(text)
             if not match:
                 english_match = english_anchor_pattern.search(text)
@@ -603,11 +643,11 @@ class ContractFieldExtractor:
                     continue
                 if anchor_value is None:
                     anchor_value = normalize_text(english_match.group("anchor")).lower()
-                anchor_refs.append(scope_ref)
+                anchor_refs.append(scope.ref)
                 continue
             if anchor_value is None:
                 anchor_value = normalize_text(match.group("anchor")).replace("契約締結の日", "契約締結日")
-            anchor_refs.append(scope_ref)
+            anchor_refs.append(scope.ref)
 
         if anchor_refs and anchor_value is not None:
             return ExtractedField(
@@ -647,8 +687,9 @@ class ContractFieldExtractor:
             re.compile(r"委託期間\s*(?P<date>年\s*月\s*日)\s*から"),
             re.compile(r"有効期間は[、,]?\s*(?P<date>年\s*月\s*日)\s*から"),
         ]
-        for scope_text, scope_ref, _ in scoped_texts:
-            text = normalize_text(scope_text)
+        period_candidates: list[tuple[ExtractedField, float]] = []
+        for scope in scopes:
+            text = normalize_text(scope.text)
             for pattern in period_clause_patterns:
                 match = pattern.search(text)
                 if not match:
@@ -657,14 +698,31 @@ class ContractFieldExtractor:
                 normalized_date = self._normalize_date_token(raw_date) or self._extract_placeholder_date_token(raw_date)
                 if normalized_date is None:
                     continue
-                return ExtractedField(
+                candidate = ExtractedField(
                     field_name="effective_date",
                     value=normalized_date,
                     confidence=0.64,
                     reason="matched_effective_date_period_clause_fallback",
-                    evidence_refs=[scope_ref],
+                    evidence_refs=[scope.ref],
                     flags=["period_clause_fallback"],
                 )
+                score = self._rank_extracted_candidate(
+                    field_name="effective_date",
+                    candidate=candidate,
+                    scope=scope,
+                    sentence_context=text,
+                    validator=validate_effective_date,
+                )
+                if isinstance(normalized_date, str):
+                    score += self._date_role_score(
+                        field_name="effective_date",
+                        sentence=text,
+                        date_value=normalized_date,
+                    )
+                period_candidates.append((candidate, score))
+        best_period = self._select_best_scored_candidate(period_candidates)
+        if best_period is not None:
+            return best_period
 
         return absolute
 
@@ -812,6 +870,77 @@ class ContractFieldExtractor:
             evidence_refs=unique_preserve_order_refs([best_candidate.evidence_ref] + current.evidence_refs),
             flags=unique_preserve_order(base_flags + [finder_flag, "finder_supplemented"]),
         )
+
+    @staticmethod
+    def _select_best_scored_candidate(candidates: list[tuple[ExtractedField, float]]) -> ExtractedField | None:
+        if not candidates:
+            return None
+        best, _ = sorted(
+            candidates,
+            key=lambda item: (
+                -item[1],
+                -(item[0].confidence or 0.0),
+                item[0].reason,
+                item[0].evidence_refs[0].block_id if item[0].evidence_refs else "",
+            ),
+        )[0]
+        return best
+
+    def _rank_extracted_candidate(
+        self,
+        *,
+        field_name: str,
+        candidate: ExtractedField,
+        scope: _FieldScope,
+        sentence_context: str,
+        validator: Callable[..., FieldValidationResult] | None = None,
+    ) -> float:
+        score = (candidate.confidence or 0.0) + scope.scope_score
+        if scope.source_kind == "clause":
+            score += 0.16
+        if scope.clause_related:
+            score += 0.08
+
+        compact = re.sub(r"\s+", "", normalize_text(sentence_context))
+        if field_name == "governing_law":
+            if "準拠法" in compact:
+                score += 0.24
+            if "適用法" in compact:
+                score += 0.15
+            if "日本法" in compact or "日本国法" in compact:
+                score += 0.22
+            if any(token in compact.lower() for token in ["governedby", "lawsof", "construedinaccordancewith"]):
+                score += 0.16
+        elif field_name == "jurisdiction":
+            if "専属的合意管轄" in compact or "合意管轄" in compact:
+                score += 0.24
+            if "第一審" in compact:
+                score += 0.18
+            if "裁判所" in compact:
+                score += 0.08
+            if candidate.value in {"裁判所", "地方裁判所", "簡易裁判所", "家庭裁判所", "高等裁判所"}:
+                score -= 0.30
+        elif field_name == "effective_date":
+            if any(token in compact for token in ["効力発生日", "発効日", "契約締結日"]):
+                score += 0.20
+            if any(token in compact.lower() for token in ["effectivedate", "executiondate", "datedasof"]):
+                score += 0.12
+        elif field_name == "expiration_date":
+            if any(token in compact for token in ["有効期間", "契約期間", "満了日", "終了日", "まで"]):
+                score += 0.20
+            if any(token in compact.lower() for token in ["expiration", "termination", "until"]):
+                score += 0.12
+
+        if validator is not None and candidate.value is not None:
+            validated = validator(candidate.value, reason=candidate.reason, confidence=candidate.confidence)
+            if not validated.accepted:
+                score -= 0.80
+            else:
+                if validated.anchor_only:
+                    score -= 0.10
+                if validated.quality_flags:
+                    score -= min(0.35, 0.05 * len(validated.quality_flags))
+        return score
 
     @staticmethod
     def _replacement_margin(route: str, field_name: str) -> float:
@@ -1254,11 +1383,13 @@ class ContractFieldExtractor:
             "その他",
             "附則",
         )
-        for scope_text, scope_ref, clause_related in self._iter_field_scopes(
+        candidates: list[tuple[ExtractedField, float]] = []
+        for scope in self._iter_field_scopes(
             blocks=blocks,
             clauses=clauses,
             clause_keywords=clause_keywords,
         ):
+            scope_text = scope.text
             for sentence in self._split_clause_sentences(scope_text):
                 sentence_clean = re.sub(r"[\[\]【】()（）]", "", sentence)
                 sentence_compact = re.sub(r"\s+", "", sentence_clean)
@@ -1280,14 +1411,22 @@ class ContractFieldExtractor:
                             continue
                         if "日本" in law:
                             law = "日本法"
-                        confidence = 0.94 if clause_related else 0.89
-                        return ExtractedField(
+                        confidence = 0.94 if scope.clause_related else 0.89
+                        candidate = ExtractedField(
                             field_name="governing_law",
                             value=law,
                             confidence=confidence,
                             reason="matched_governing_law_clause_rule",
-                            evidence_refs=[scope_ref],
+                            evidence_refs=[scope.ref],
                         )
+                        score = self._rank_extracted_candidate(
+                            field_name="governing_law",
+                            candidate=candidate,
+                            scope=scope,
+                            sentence_context=sentence_compact,
+                            validator=validate_governing_law,
+                        )
+                        candidates.append((candidate, score))
 
                 if (
                     re.search(r"[A-Za-z]{3,}", sentence_clean)
@@ -1300,17 +1439,25 @@ class ContractFieldExtractor:
                     english_candidate = validate_governing_law(
                         sentence_clean,
                         reason="matched_governing_law_clause_rule",
-                        confidence=0.90 if clause_related else 0.86,
+                        confidence=0.90 if scope.clause_related else 0.86,
                     )
                     if english_candidate.accepted:
-                        confidence = 0.90 if clause_related else 0.86
-                        return ExtractedField(
+                        confidence = 0.90 if scope.clause_related else 0.86
+                        candidate = ExtractedField(
                             field_name="governing_law",
                             value=sentence_clean,
                             confidence=confidence,
                             reason="matched_governing_law_clause_rule",
-                            evidence_refs=[scope_ref],
+                            evidence_refs=[scope.ref],
                         )
+                        score = self._rank_extracted_candidate(
+                            field_name="governing_law",
+                            candidate=candidate,
+                            scope=scope,
+                            sentence_context=sentence_clean,
+                            validator=validate_governing_law,
+                        )
+                        candidates.append((candidate, score))
 
                 if (
                     (
@@ -1323,14 +1470,26 @@ class ContractFieldExtractor:
                     )
                     and ("日本法" in sentence_compact or "日本国法" in sentence_compact)
                 ):
-                    confidence = 0.92 if clause_related else 0.87
-                    return ExtractedField(
+                    confidence = 0.92 if scope.clause_related else 0.87
+                    candidate = ExtractedField(
                         field_name="governing_law",
                         value="日本法",
                         confidence=confidence,
                         reason="matched_governing_law_clause_rule",
-                        evidence_refs=[scope_ref],
+                        evidence_refs=[scope.ref],
                     )
+                    score = self._rank_extracted_candidate(
+                        field_name="governing_law",
+                        candidate=candidate,
+                        scope=scope,
+                        sentence_context=sentence_compact,
+                        validator=validate_governing_law,
+                    )
+                    candidates.append((candidate, score))
+
+        best_candidate = self._select_best_scored_candidate(candidates)
+        if best_candidate is not None:
+            return best_candidate
 
         return ExtractedField(
             field_name="governing_law",
@@ -1359,11 +1518,13 @@ class ContractFieldExtractor:
         ]
 
         clause_keywords = ("管轄", "合意管轄", "管轄裁判所", "裁判所", "紛争", "一般条項", "雑則", "附則")
-        for scope_text, scope_ref, clause_related in self._iter_field_scopes(
+        candidates: list[tuple[ExtractedField, float]] = []
+        for scope in self._iter_field_scopes(
             blocks=blocks,
             clauses=clauses,
             clause_keywords=clause_keywords,
         ):
+            scope_text = scope.text
             for sentence in self._split_clause_sentences(scope_text):
                 sentence_clean = re.sub(r"[\[\]【】()（）]", "", sentence)
                 sentence_compact = re.sub(r"\s+", "", sentence_clean)
@@ -1373,29 +1534,53 @@ class ContractFieldExtractor:
                         if not match:
                             continue
                         court = self._normalize_court_name(match.group("court"))
-                        confidence = 0.94 if clause_related else 0.88
-                        return ExtractedField(
+                        if "管轄する裁判所" in court:
+                            continue
+                        confidence = 0.94 if scope.clause_related else 0.88
+                        candidate = ExtractedField(
                             field_name="jurisdiction",
                             value=court,
                             confidence=confidence,
                             reason="matched_jurisdiction_clause_rule",
-                            evidence_refs=[scope_ref],
+                            evidence_refs=[scope.ref],
                         )
+                        score = self._rank_extracted_candidate(
+                            field_name="jurisdiction",
+                            candidate=candidate,
+                            scope=scope,
+                            sentence_context=sentence_compact,
+                            validator=validate_jurisdiction,
+                        )
+                        candidates.append((candidate, score))
 
                 if "合意管轄" in sentence_compact and "裁判所" in sentence_compact:
                     fallback_court = re.search(r"([^\s、。\n]{2,40}裁判所)", sentence_compact)
                     if fallback_court:
                         candidate = self._normalize_court_name(fallback_court.group(1))
+                        if "管轄する裁判所" in candidate:
+                            continue
                         if candidate in {"裁判所", "地方裁判所", "簡易裁判所", "家庭裁判所", "高等裁判所"}:
                             continue
-                        confidence = 0.90 if clause_related else 0.84
-                        return ExtractedField(
+                        confidence = 0.90 if scope.clause_related else 0.84
+                        extracted = ExtractedField(
                             field_name="jurisdiction",
                             value=candidate,
                             confidence=confidence,
                             reason="matched_jurisdiction_clause_rule",
-                            evidence_refs=[scope_ref],
+                            evidence_refs=[scope.ref],
                         )
+                        score = self._rank_extracted_candidate(
+                            field_name="jurisdiction",
+                            candidate=extracted,
+                            scope=scope,
+                            sentence_context=sentence_compact,
+                            validator=validate_jurisdiction,
+                        )
+                        candidates.append((extracted, score))
+
+        best_candidate = self._select_best_scored_candidate(candidates)
+        if best_candidate is not None:
+            return best_candidate
 
         return ExtractedField(
             field_name="jurisdiction",
@@ -1413,8 +1598,8 @@ class ContractFieldExtractor:
         clause_keywords: tuple[str, ...],
         *,
         include_block_scopes: bool = True,
-    ) -> list[tuple[str, EvidenceRef, bool]]:
-        scopes: list[tuple[str, EvidenceRef, bool]] = []
+    ) -> list[_FieldScope]:
+        scopes: list[_FieldScope] = []
         excluded_section_types = {
             SectionType.APPENDIX,
             SectionType.FORM,
@@ -1435,18 +1620,40 @@ class ContractFieldExtractor:
                     -item[0],
                 ),
             )
-            for _, clause in prioritized_clauses:
+            for idx, clause in prioritized_clauses:
                 if not clause.evidence_refs:
                     continue
-                clause_related = self._clause_priority(clause, clause_keywords) > 0.0
-                scopes.append((clause.text, clause.evidence_refs[0], clause_related))
+                clause_score = self._clause_priority(clause, clause_keywords)
+                clause_related = clause_score > 0.0
+                tail_bonus = 0.20 if idx >= tail_start else 0.0
+                scopes.append(
+                    _FieldScope(
+                        text=clause.text,
+                        ref=clause.evidence_refs[0],
+                        clause_related=clause_related,
+                        scope_score=clause_score + tail_bonus,
+                        source_kind="clause",
+                        sequence_index=idx,
+                    )
+                )
 
         if include_block_scopes:
             candidate_blocks = [block for block in blocks if block.block_id not in excluded_block_ids]
             if not candidate_blocks:
                 candidate_blocks = list(blocks)
-            for block in candidate_blocks:
-                scopes.append((block.text, self._to_ref(block), False))
+            total_blocks = max(1, len(candidate_blocks))
+            for idx, block in enumerate(candidate_blocks):
+                tail_bonus = 0.12 if idx >= int(total_blocks * 0.70) else 0.0
+                scopes.append(
+                    _FieldScope(
+                        text=block.text,
+                        ref=self._to_ref(block),
+                        clause_related=False,
+                        scope_score=tail_bonus,
+                        source_kind="block",
+                        sequence_index=idx,
+                    )
+                )
         return scopes
 
     def _detect_relative_jurisdiction_expression(
@@ -1458,14 +1665,14 @@ class ContractFieldExtractor:
             r"(?P<expr>(?:(?:甲|乙|被告|原告|相手方|当事者)\s*の\s*)?(?:所在地|住所|本店所在地|本店)\s*を\s*管轄する裁判所)"
         )
         clause_keywords = ("管轄", "合意管轄", "管轄裁判所", "裁判所", "紛争", "雑則", "附則")
-        for scope_text, scope_ref, _ in self._iter_field_scopes(blocks=blocks, clauses=clauses, clause_keywords=clause_keywords):
-            compact = normalize_text(scope_text)
+        for scope in self._iter_field_scopes(blocks=blocks, clauses=clauses, clause_keywords=clause_keywords):
+            compact = normalize_text(scope.text)
             match = pattern.search(compact)
             if not match:
                 continue
             expr = normalize_text(match.group("expr"))
             if expr and "管轄する裁判所" in expr:
-                return expr, scope_ref
+                return expr, scope.ref
         return None
 
     def _attach_relative_jurisdiction_expression(
@@ -1574,7 +1781,8 @@ class ContractFieldExtractor:
         clause_keywords: tuple[str, ...] | None = None,
     ) -> ExtractedField:
         relative_refs: list[EvidenceRef] = []
-        scopes: list[tuple[str, EvidenceRef, bool]]
+        absolute_candidates: list[tuple[ExtractedField, float]] = []
+        scopes: list[_FieldScope]
         if clause_keywords is not None:
             scopes = self._iter_field_scopes(
                 blocks=blocks,
@@ -1582,10 +1790,20 @@ class ContractFieldExtractor:
                 clause_keywords=clause_keywords,
             )
         else:
-            scopes = [(block.text, self._to_ref(block), False) for block in blocks]
+            scopes = [
+                _FieldScope(
+                    text=block.text,
+                    ref=self._to_ref(block),
+                    clause_related=False,
+                    scope_score=0.0,
+                    source_kind="block",
+                    sequence_index=idx,
+                )
+                for idx, block in enumerate(blocks)
+            ]
 
-        for scope_text, scope_ref, _ in scopes:
-            text = normalize_text(scope_text)
+        for scope in scopes:
+            text = normalize_text(scope.text)
             sentences = self._split_clause_sentences(text)
             for sentence in sentences:
                 for pattern in patterns:
@@ -1596,13 +1814,26 @@ class ContractFieldExtractor:
                     iso = self._normalize_date_token(raw_date)
                     if iso is None:
                         continue
-                    return ExtractedField(
+                    candidate = ExtractedField(
                         field_name=field_name,
                         value=iso,
                         confidence=0.93,
                         reason=reason,
-                        evidence_refs=[scope_ref],
+                        evidence_refs=[scope.ref],
                     )
+                    score = self._rank_extracted_candidate(
+                        field_name=field_name,
+                        candidate=candidate,
+                        scope=scope,
+                        sentence_context=sentence,
+                        validator=validate_effective_date if field_name == "effective_date" else validate_expiration_date,
+                    )
+                    score += self._date_role_score(
+                        field_name=field_name,
+                        sentence=sentence,
+                        date_value=iso,
+                    )
+                    absolute_candidates.append((candidate, score))
 
                 if allow_fallback_absolute:
                     if field_name == "expiration_date" and not any(
@@ -1624,28 +1855,59 @@ class ContractFieldExtractor:
                     if field_name == "expiration_date":
                         fallback_expiration = self._last_absolute_date(sentence)
                         if fallback_expiration is not None:
-                            return ExtractedField(
+                            candidate = ExtractedField(
                                 field_name=field_name,
                                 value=fallback_expiration,
                                 confidence=0.82,
                                 reason=f"{reason}_fallback",
-                                evidence_refs=[scope_ref],
+                                evidence_refs=[scope.ref],
                             )
+                            score = self._rank_extracted_candidate(
+                                field_name=field_name,
+                                candidate=candidate,
+                                scope=scope,
+                                sentence_context=sentence,
+                                validator=validate_expiration_date,
+                            )
+                            score += self._date_role_score(
+                                field_name=field_name,
+                                sentence=sentence,
+                                date_value=fallback_expiration,
+                            )
+                            absolute_candidates.append((candidate, score))
+                            continue
                     fallback = self._first_absolute_date(sentence)
                     if fallback is not None:
-                        return ExtractedField(
+                        candidate = ExtractedField(
                             field_name=field_name,
                             value=fallback,
                             confidence=0.82,
                             reason=f"{reason}_fallback",
-                            evidence_refs=[scope_ref],
+                            evidence_refs=[scope.ref],
                         )
+                        score = self._rank_extracted_candidate(
+                            field_name=field_name,
+                            candidate=candidate,
+                            scope=scope,
+                            sentence_context=sentence,
+                            validator=validate_effective_date if field_name == "effective_date" else validate_expiration_date,
+                        )
+                        score += self._date_role_score(
+                            field_name=field_name,
+                            sentence=sentence,
+                            date_value=fallback,
+                        )
+                        absolute_candidates.append((candidate, score))
 
             if relative_patterns is not None and relative_reason is not None:
                 for relative_pattern in relative_patterns:
                     if relative_pattern.search(text):
-                        relative_refs.append(scope_ref)
+                        relative_refs.append(scope.ref)
                         break
+
+        best_absolute = self._select_best_scored_candidate(absolute_candidates)
+        if best_absolute is not None:
+            return best_absolute
 
         if relative_refs and relative_reason is not None:
             return ExtractedField(
@@ -1685,6 +1947,55 @@ class ContractFieldExtractor:
             if iso is not None:
                 return iso
         return None
+
+    @staticmethod
+    def _absolute_dates_in_sentence(text: str) -> list[str]:
+        dates: list[str] = []
+        for match in _ABSOLUTE_DATE_TOKEN_RE.finditer(text):
+            raw_date = normalize_text(match.group(0))
+            iso = ContractFieldExtractor._normalize_date_token(raw_date)
+            if iso is not None:
+                dates.append(iso)
+        return dates
+
+    @staticmethod
+    def _date_role_score(field_name: str, sentence: str, date_value: str) -> float:
+        if not sentence or not date_value:
+            return 0.0
+        normalized = normalize_text(sentence)
+        compact = re.sub(r"\s+", "", normalized)
+        lower_compact = compact.lower()
+        dates = ContractFieldExtractor._absolute_dates_in_sentence(normalized)
+        score = 0.0
+        if field_name == "effective_date":
+            if any(token in compact for token in ["効力発生日", "発効日", "契約締結日", "契約締結の日", "締結日"]):
+                score += 0.16
+            if any(token in lower_compact for token in ["effectivedate", "executiondate", "datedasof"]):
+                score += 0.12
+            if len(dates) >= 2:
+                if date_value == dates[0]:
+                    score += 0.24
+                if date_value == dates[-1]:
+                    score -= 0.16
+            if ("から" in compact or "より" in compact) and dates and date_value == dates[0]:
+                score += 0.10
+            if "まで" in compact and dates and date_value == dates[-1]:
+                score -= 0.12
+        elif field_name == "expiration_date":
+            if any(token in compact for token in ["有効期間", "契約期間", "満了日", "終了日", "まで", "満了", "終了"]):
+                score += 0.16
+            if any(token in lower_compact for token in ["expiration", "termination", "until"]):
+                score += 0.12
+            if len(dates) >= 2:
+                if date_value == dates[-1]:
+                    score += 0.24
+                if date_value == dates[0]:
+                    score -= 0.16
+            if "まで" in compact and dates and date_value == dates[-1]:
+                score += 0.10
+            if ("から" in compact or "より" in compact) and dates and date_value == dates[0]:
+                score -= 0.12
+        return score
 
     @staticmethod
     def _last_absolute_date(text: str) -> str | None:

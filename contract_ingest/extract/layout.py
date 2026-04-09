@@ -303,19 +303,21 @@ class LayoutAnalyzer:
         normalized = normalize_text(text)
         if not normalized:
             return "annotation"
-        if is_article_heading_text(normalized):
-            return "body"
-        if LayoutAnalyzer._is_appendix_heading(normalized):
-            return "body"
-        if is_annotation_like_text(normalized):
-            return "annotation"
-        if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
-            return "annotation"
-        if is_page_number_text(normalized):
-            return "header_footer"
-        if normalized in repeated_margin_texts and bbox.x0 >= 420.0 and bbox.width <= 180.0:
-            return "annotation"
-        if LayoutAnalyzer._looks_like_continuation_with_context(
+
+        structural_heading_role = LayoutAnalyzer._classify_structural_heading_role(normalized)
+        if structural_heading_role is not None:
+            return structural_heading_role
+
+        margin_role = LayoutAnalyzer._classify_margin_noise_pre_body_role(
+            text=normalized,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+        )
+        if margin_role is not None:
+            return margin_role
+
+        body_rescue_role = LayoutAnalyzer._classify_body_rescue_role(
             text=normalized,
             bbox=bbox,
             page_height=page_height,
@@ -324,25 +326,30 @@ class LayoutAnalyzer:
             prev_bbox=prev_bbox,
             next_text=next_text,
             next_bbox=next_bbox,
-        ):
-            return "body"
-        if LayoutAnalyzer._looks_like_header_footer_block(
-            normalized,
+        )
+        if body_rescue_role is not None:
+            return body_rescue_role
+
+        header_footer_role = LayoutAnalyzer._classify_margin_noise_post_body_role(
+            text=normalized,
             bbox=bbox,
             page_height=page_height,
             repeated_margin_texts=repeated_margin_texts,
-        ):
-            return "header_footer"
-        if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
-            return "body"
-        if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
-            return "body"
+        )
+        if header_footer_role is not None:
+            return header_footer_role
+
         if LayoutAnalyzer._is_low_value_fragment_text(normalized):
             return "annotation"
-        if LayoutAnalyzer._is_signature_like_text(normalized, bbox, page_height):
-            return "signature"
-        if LayoutAnalyzer._is_table_like_block(normalized, bbox=bbox, page_height=page_height):
-            return "annotation"
+
+        structural_non_body_role = LayoutAnalyzer._classify_structural_non_body_role(
+            text=normalized,
+            bbox=bbox,
+            page_height=page_height,
+        )
+        if structural_non_body_role is not None:
+            return structural_non_body_role
+
         if (
             len(normalized) <= 8
             and not LayoutAnalyzer._looks_like_sentence_text(normalized)
@@ -361,6 +368,83 @@ class LayoutAnalyzer:
         ):
             return "annotation"
         return "body"
+
+    @staticmethod
+    def _classify_structural_heading_role(text: str) -> str | None:
+        if is_article_heading_text(text):
+            return "body"
+        if LayoutAnalyzer._is_appendix_heading(text):
+            return "body"
+        return None
+
+    @staticmethod
+    def _classify_margin_noise_pre_body_role(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        repeated_margin_texts: set[str],
+    ) -> str | None:
+        if is_annotation_like_text(text):
+            return "annotation"
+        if LayoutAnalyzer._looks_like_annotation_column(text, bbox=bbox, page_height=page_height):
+            return "annotation"
+        if is_page_number_text(text):
+            return "header_footer"
+        if text in repeated_margin_texts and bbox.x0 >= 420.0 and bbox.width <= 180.0:
+            return "annotation"
+        return None
+
+    @staticmethod
+    def _classify_body_rescue_role(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        repeated_margin_texts: set[str],
+        prev_text: str | None,
+        prev_bbox: BBox | None,
+        next_text: str | None,
+        next_bbox: BBox | None,
+    ) -> str | None:
+        if LayoutAnalyzer._looks_like_continuation_with_context(
+            text=text,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+            prev_text=prev_text,
+            prev_bbox=prev_bbox,
+            next_text=next_text,
+            next_bbox=next_bbox,
+        ):
+            return "body"
+        if LayoutAnalyzer._looks_like_short_critical_clause_line(text):
+            return "body"
+        if len(text) >= 18 and LayoutAnalyzer._looks_like_sentence_text(text):
+            return "body"
+        return None
+
+    @staticmethod
+    def _classify_margin_noise_post_body_role(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        repeated_margin_texts: set[str],
+    ) -> str | None:
+        if LayoutAnalyzer._looks_like_header_footer_block(
+            text,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+        ):
+            return "header_footer"
+        return None
+
+    @staticmethod
+    def _classify_structural_non_body_role(text: str, bbox: BBox, page_height: float) -> str | None:
+        if LayoutAnalyzer._is_signature_like_text(text, bbox, page_height):
+            return "signature"
+        if LayoutAnalyzer._is_table_like_block(text, bbox=bbox, page_height=page_height):
+            return "annotation"
+        return None
 
     @staticmethod
     def _looks_like_sentence_text(text: str) -> bool:
