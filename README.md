@@ -1,54 +1,72 @@
 # Contract PDF Extraction for Japanese Business Documents
 
-Extract structured JSON / CSV from business PDFs with native-text-first parsing and OCR fallback.
+Structure-aware contract ingestion for Japanese business PDFs, with native-text-first parsing and OCR fallback.
 
-## What this solves
+## What this repository is
 
-Many document workflows break on scanned PDFs, mixed native/OCR text, unstable layouts, and weak clause recovery.
+`contract-ingest` is a review-oriented extraction pipeline for turning contract PDFs into structured outputs with evidence references.
 
-This project focuses on making extraction from contracts and business PDFs more stable and easier to integrate into downstream review and automation workflows.
+It is designed for:
 
-## Best fit use cases
+- contract ingestion support,
+- legal/business review support,
+- internal document automation,
+- PDF-to-JSON / CSV preprocessing.
 
-- contract review support
-- PDF-to-JSON / CSV extraction
-- OCR-backed business document pipelines
-- structure-aware preprocessing for internal tools
-- Japanese document processing workflows
+## Current strengths
 
-## What it does
+- Clause/section recovery that is more robust than naive page-text parsing.
+- Native text first, with OCR fallback for scanned or mixed-quality PDFs.
+- Review-aware field extraction (the pipeline surfaces ambiguity instead of forcing overconfident outputs).
+- Evidence-friendly outputs (`evidence_refs`, issue details) for downstream audit and triage.
 
-- parses contract PDFs with native text extraction first
-- falls back to OCR when necessary
-- recovers document structure for downstream extraction
-- improves clause and field stability for review-oriented processing
-- produces outputs suitable for JSON / CSV workflows
+## Extracted field coverage
 
-## Demo
+Current normalized extraction includes:
 
-![Input PDF to structured output](docs/images/input_to_output.png)
+- contract type
+- counterparties
+- effective date
+- expiration date
+- auto-renewal
+- termination notice period
+- governing law
+- jurisdiction
 
-## Sample output
+## Review philosophy
 
-```json
-{
-  "document_type": "nda",
-  "parties": [
-    "Company A",
-    "Company B"
-  ],
-  "clauses": [
-    {
-      "title": "Confidential Information",
-      "text": "..."
-    },
-    {
-      "title": "Use Restrictions",
-      "text": "..."
-    }
-  ]
-}
+This project prioritizes safe reviewability over optimistic automation.
+
+Typical review signals include:
+
+- missing required fields,
+- low-quality field candidates,
+- low confidence,
+- unstable clause split,
+- section boundary uncertainty.
+
+## Baseline evaluation foundation
+
+Baseline artifacts are included for reproducible evaluation setup:
+
+- manifest schema: `data/baseline_manifest.jsonl`
+- baseline evaluator: `scripts/eval_baseline_contracts.py`
+- metric definitions: `docs/evaluation/baseline_metrics.md`
+- failure taxonomy: `docs/evaluation/failure_taxonomy.md`
+
+Run baseline manifest validation:
+
+```bash
+source .venv/bin/activate
+python scripts/eval_baseline_contracts.py --manifest data/baseline_manifest.jsonl
 ```
+
+## Current limitations
+
+- Document coverage is strongest for Japanese business contracts; broader document classes may require additional tuning.
+- Ambiguous cases still require human review.
+- Public, adjudicated benchmark coverage is still limited (foundation is present; dataset growth is ongoing).
+- The project is actively evolving; behavior can improve as layout and extraction heuristics are refined.
 
 ## Quick start
 
@@ -57,14 +75,9 @@ uv sync
 uv run pytest
 ```
 
-## Notes
+## Demo
 
-This repository is a good fit for teams that need:
-
-- contract ingestion
-- OCR-backed PDF workflows
-- structure-aware extraction
-- review support before manual approval
+![Input PDF to structured output](docs/images/input_to_output.png)
 
 ## Stack
 

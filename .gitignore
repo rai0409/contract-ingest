@@ -19,7 +19,8 @@ __pycache__/
 *.pyc
 
 # local data
-data/
+data/*
+!data/baseline_manifest.jsonl
 
 # local notes / diffs
 codex_*.txt
