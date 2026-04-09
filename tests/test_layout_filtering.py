@@ -481,3 +481,84 @@ def test_layout_priority_appendix_heading_beats_annotation_like_short_text() -> 
 
     assert appendix_role == "body"
     assert annotation_role == "annotation"
+
+
+def test_layout_does_not_rescue_repeated_right_side_legal_marker_note_as_body() -> None:
+    text = "準拠法 日本法"
+    bbox = BBox(468.0, 318.0, 690.0, 340.0)
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=bbox,
+        page_height=1000.0,
+        repeated_margin_texts={text},
+        prev_text="本契約に関する紛争は当事者間で協議して解決する。",
+        prev_bbox=BBox(12.0, 292.0, 582.0, 314.0),
+        next_text="第11条（管轄）福岡地方裁判所を第一審の専属的合意管轄裁判所とする。",
+        next_bbox=BBox(10.0, 346.0, 580.0, 372.0),
+    )
+    inferred = infer_block_type(text, bbox, page_height=1000.0)
+
+    assert role in {"annotation", "header_footer"}
+    assert inferred == BlockType.OTHER
+
+
+def test_layout_short_critical_bottom_isolated_line_is_not_rescued() -> None:
+    text = "準拠法 日本法"
+    bbox = BBox(14.0, 932.0, 220.0, 952.0)
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=bbox,
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(text, bbox, page_height=1000.0)
+
+    assert role in {"annotation", "header_footer"}
+    assert inferred != BlockType.TEXT
+
+
+def test_layout_short_critical_top_line_with_neighbor_context_is_rescued() -> None:
+    text = "効力発生日 2025年4月1日"
+    bbox = BBox(12.0, 32.0, 565.0, 54.0)
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=bbox,
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+        next_text="本契約は上記日付から効力を有するものとする。",
+        next_bbox=BBox(11.0, 56.0, 566.0, 82.0),
+    )
+    inferred = infer_block_type(text, bbox, page_height=1000.0)
+
+    assert role == "body"
+    assert inferred in {BlockType.TEXT, BlockType.HEADER}
+
+
+def test_layout_structured_signature_row_keeps_non_body_and_signature_area() -> None:
+    text = "甲：株式会社テスト 住所：東京都港区 代表者：山田太郎 ㊞"
+    bbox = BBox(12.0, 828.0, 560.0, 852.0)
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=bbox,
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(text, bbox, page_height=1000.0)
+
+    assert role == "signature"
+    assert inferred == BlockType.SIGNATURE_AREA
+
+
+def test_layout_legal_marker_truncation_fragment_stays_annotation_and_infer_other() -> None:
+    text = "準拠法の"
+    bbox = BBox(498.0, 418.0, 570.0, 438.0)
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=bbox,
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    inferred = infer_block_type(text, bbox, page_height=1000.0)
+
+    assert role == "annotation"
+    assert inferred == BlockType.OTHER

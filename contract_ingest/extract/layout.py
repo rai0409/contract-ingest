@@ -388,10 +388,15 @@ class LayoutAnalyzer:
             return "annotation"
         if LayoutAnalyzer._looks_like_annotation_column(text, bbox=bbox, page_height=page_height):
             return "annotation"
+        if LayoutAnalyzer._looks_like_right_side_critical_note(
+            text=text,
+            bbox=bbox,
+            page_height=page_height,
+            repeated_margin_texts=repeated_margin_texts,
+        ):
+            return "annotation"
         if is_page_number_text(text):
             return "header_footer"
-        if text in repeated_margin_texts and bbox.x0 >= 420.0 and bbox.width <= 180.0:
-            return "annotation"
         return None
 
     @staticmethod
@@ -417,10 +422,48 @@ class LayoutAnalyzer:
         ):
             return "body"
         if LayoutAnalyzer._looks_like_short_critical_clause_line(text):
+            if LayoutAnalyzer._looks_like_right_side_critical_note(
+                text=text,
+                bbox=bbox,
+                page_height=page_height,
+                repeated_margin_texts=repeated_margin_texts,
+            ):
+                return None
+            near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
+            if near_margin:
+                return "annotation"
             return "body"
         if len(text) >= 18 and LayoutAnalyzer._looks_like_sentence_text(text):
             return "body"
         return None
+
+    @staticmethod
+    def _looks_like_right_side_critical_note(
+        text: str,
+        bbox: BBox,
+        page_height: float,
+        repeated_margin_texts: set[str],
+    ) -> bool:
+        if not text:
+            return False
+        if LayoutAnalyzer._looks_like_sentence_text(text):
+            return False
+        compact = re.sub(r"\s+", "", normalize_text(text))
+        if not compact:
+            return False
+        right_side = bbox.x0 >= 420.0
+        narrow = bbox.width <= 240.0
+        if not right_side or not narrow:
+            return False
+        if text in repeated_margin_texts:
+            return True
+        if not LayoutAnalyzer._looks_like_short_critical_clause_line(compact):
+            return False
+        if len(compact) > 24:
+            return False
+        far_right = bbox.x0 >= 460.0
+        top_or_bottom_margin = bbox.y1 <= page_height * 0.16 or bbox.y0 >= page_height * 0.84
+        return far_right or top_or_bottom_margin
 
     @staticmethod
     def _classify_margin_noise_post_body_role(
@@ -574,7 +617,7 @@ class LayoutAnalyzer:
         continuation_shape = len(text) <= 28 and (starts_with_particle or ends_with_fragment)
         if not is_short_critical and not sentence_like and not continuation_shape:
             return False
-        if text in repeated_margin_texts:
+        if text in repeated_margin_texts and not sentence_like:
             return False
         if LayoutAnalyzer._looks_like_annotation_column(text, bbox=bbox, page_height=page_height):
             return False
@@ -872,9 +915,19 @@ def infer_block_type(text: str, bbox: BBox, page_height: float) -> BlockType:
         return BlockType.FOOTER
     if LayoutAnalyzer._looks_like_annotation_column(normalized, bbox=bbox, page_height=page_height):
         return BlockType.OTHER
+    if LayoutAnalyzer._looks_like_right_side_critical_note(
+        text=normalized,
+        bbox=bbox,
+        page_height=page_height,
+        repeated_margin_texts=set(),
+    ):
+        return BlockType.OTHER
     if LayoutAnalyzer._is_appendix_heading(normalized):
         return BlockType.TEXT
     if LayoutAnalyzer._looks_like_short_critical_clause_line(normalized):
+        near_margin = bbox.y1 <= page_height * 0.12 or bbox.y0 >= page_height * 0.88
+        if near_margin and bbox.width <= 260.0 and len(normalized) <= 28:
+            return BlockType.OTHER
         return BlockType.TEXT
     if len(normalized) >= 18 and LayoutAnalyzer._looks_like_sentence_text(normalized):
         return BlockType.TEXT
