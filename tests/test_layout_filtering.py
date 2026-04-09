@@ -406,3 +406,78 @@ def test_layout_right_side_repeated_margin_text_prefers_annotation() -> None:
     )
 
     assert role == "annotation"
+
+
+def test_layout_priority_repeated_right_side_note_vs_short_critical_line() -> None:
+    repeated = {"準拠法"}
+    repeated_note_role = LayoutAnalyzer._classify_text_role(
+        text="準拠法",
+        bbox=BBox(500.0, 320.0, 570.0, 340.0),
+        page_height=1000.0,
+        repeated_margin_texts=repeated,
+    )
+    short_critical_role = LayoutAnalyzer._classify_text_role(
+        text="準拠法 日本法",
+        bbox=BBox(10.0, 922.0, 580.0, 944.0),
+        page_height=1000.0,
+        repeated_margin_texts=repeated,
+        prev_text="本契約の解釈は当事者間の合意により定める。",
+        prev_bbox=BBox(10.0, 896.0, 580.0, 918.0),
+        next_text="管轄は福岡地方裁判所とする。",
+        next_bbox=BBox(10.0, 946.0, 580.0, 970.0),
+    )
+
+    assert repeated_note_role in {"annotation", "header_footer"}
+    assert short_critical_role == "body"
+
+
+def test_layout_priority_continuation_wins_over_header_footer_regions() -> None:
+    top_role = LayoutAnalyzer._classify_text_role(
+        text="本契約の効力は次条に定める。",
+        bbox=BBox(10.0, 24.0, 580.0, 48.0),
+        page_height=1000.0,
+        repeated_margin_texts={"本契約の効力は次条に定める。"},
+        next_text="乙はこれを遵守するものとする。",
+        next_bbox=BBox(10.0, 50.0, 580.0, 74.0),
+    )
+    bottom_role = LayoutAnalyzer._classify_text_role(
+        text="本契約の効力は次条に定める。",
+        bbox=BBox(10.0, 934.0, 580.0, 958.0),
+        page_height=1000.0,
+        repeated_margin_texts={"本契約の効力は次条に定める。"},
+        prev_text="甲は法令を遵守し信義に従い行動する。",
+        prev_bbox=BBox(10.0, 908.0, 580.0, 930.0),
+    )
+
+    assert top_role == "body"
+    assert bottom_role == "body"
+
+
+def test_layout_priority_signature_token_inside_long_prose_stays_body() -> None:
+    text = "当事者は署名手続の進め方を確認し、記名押印の方法について別途協議のうえ決定するものとする。"
+    role = LayoutAnalyzer._classify_text_role(
+        text=text,
+        bbox=BBox(10.0, 782.0, 580.0, 836.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+
+    assert role == "body"
+
+
+def test_layout_priority_appendix_heading_beats_annotation_like_short_text() -> None:
+    appendix_role = LayoutAnalyzer._classify_text_role(
+        text="別紙2（契約期間）",
+        bbox=BBox(10.0, 188.0, 260.0, 212.0),
+        page_height=1000.0,
+        repeated_margin_texts=set(),
+    )
+    annotation_role = LayoutAnalyzer._classify_text_role(
+        text="参照",
+        bbox=BBox(500.0, 188.0, 560.0, 206.0),
+        page_height=1000.0,
+        repeated_margin_texts={"参照"},
+    )
+
+    assert appendix_role == "body"
+    assert annotation_role == "annotation"
