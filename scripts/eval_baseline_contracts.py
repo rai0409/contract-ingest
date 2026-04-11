@@ -172,15 +172,62 @@ def _extract_issues(result: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _extract_reason_code(issue: dict[str, Any]) -> str:
+def _extract_reason_codes(issue: dict[str, Any]) -> list[str]:
+    reason_codes = issue.get("reason_codes")
+    if isinstance(reason_codes, str):
+        return [reason_codes]
+    if isinstance(reason_codes, list):
+        return [str(code) for code in reason_codes if isinstance(code, str) and code]
+
     reason = issue.get("reason_code")
     if isinstance(reason, str):
-        return reason
+        return [reason]
     if isinstance(reason, dict):
         value = reason.get("value")
         if isinstance(value, str):
-            return value
-    return ""
+            return [value]
+
+    code = issue.get("code")
+    if isinstance(code, str):
+        return [code]
+    return []
+
+
+def _extract_review_items(review_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = review_payload.get("items")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _build_review_items_index(results_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    index: dict[str, list[dict[str, Any]]] = {}
+    search_roots = [results_dir]
+    eval_runs_root = results_dir.parent / "eval_runs"
+    if eval_runs_root.exists():
+        search_roots.append(eval_runs_root)
+
+    seen_paths: set[Path] = set()
+    for root in search_roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for review_path in root.rglob("review.json"):
+            if review_path in seen_paths:
+                continue
+            seen_paths.add(review_path)
+            try:
+                payload = json.loads(review_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            doc_id = payload.get("doc_id")
+            if not isinstance(doc_id, str) or not doc_id:
+                continue
+            items = _extract_review_items(payload)
+            if items:
+                index.setdefault(doc_id, items)
+    return index
 
 
 def _extract_clause_count(result: dict[str, Any]) -> int | None:
@@ -233,6 +280,7 @@ def _evaluate_against_results(rows: list[dict[str, Any]], results_dir: Path) -> 
     evaluated_docs = 0
     missing_result_files = 0
     unknown_review_expectation = 0
+    review_items_by_doc_id = _build_review_items_index(results_dir)
 
     for row in rows:
         result_path = results_dir / f"{row['doc_id']}.json"
@@ -264,20 +312,24 @@ def _evaluate_against_results(rows: list[dict[str, Any]], results_dir: Path) -> 
             diff = abs(expected_clause_count - actual_clause_count)
             structural_metrics["clause_count_error"] += diff
 
-        issues = _extract_issues(result)
-        review_quality["review_item_count"] += len(issues)
+        review_items = _extract_issues(result)
+        if not review_items:
+            review_items = review_items_by_doc_id.get(str(row["doc_id"]), [])
+        review_quality["review_item_count"] += len(review_items)
 
-        reason_codes = [_extract_reason_code(issue) for issue in issues]
+        reason_codes: list[str] = []
+        for item in review_items:
+            reason_codes.extend(_extract_reason_codes(item))
         structural_metrics["reversed_clause_number_count"] += reason_codes.count("REVERSED_CLAUSE_NUMBER")
         structural_metrics["section_boundary_uncertain_count"] += reason_codes.count("SECTION_BOUNDARY_UNCERTAIN")
 
-        for issue in issues:
-            reason = _extract_reason_code(issue)
-            details = issue.get("details")
+        for item in review_items:
+            item_reason_codes = _extract_reason_codes(item)
+            details = item.get("details")
             if not isinstance(details, dict):
                 details = {}
 
-            if reason == "SECTION_BOUNDARY_UNCERTAIN":
+            if "SECTION_BOUNDARY_UNCERTAIN" in item_reason_codes:
                 category_counts = details.get("category_counts")
                 if isinstance(category_counts, dict):
                     form_count = int(category_counts.get("form_or_instruction_boundary", 0) or 0)
@@ -287,19 +339,19 @@ def _evaluate_against_results(rows: list[dict[str, Any]], results_dir: Path) -> 
                     structural_metrics["signature_leakage_count"] += signature_count
 
             text_blob = " ".join([
-                reason,
-                str(issue.get("message", "")),
+                " ".join(item_reason_codes),
+                str(item.get("message", "")),
                 json.dumps(details, ensure_ascii=False),
             ]).lower()
             if "header" in text_blob or "footer" in text_blob:
                 structural_metrics["header_footer_leakage_count"] += 1
-            if "signature" in text_blob and reason != "SECTION_BOUNDARY_UNCERTAIN":
+            if "signature" in text_blob and "SECTION_BOUNDARY_UNCERTAIN" not in item_reason_codes:
                 structural_metrics["signature_leakage_count"] += 1
             if "appendix" in text_blob or "form" in text_blob or "instruction" in text_blob:
                 structural_metrics["appendix_form_contamination_count"] += 1
 
         review_expectation = row.get("review_expectation")
-        predicted_review_needed = len(issues) > 0
+        predicted_review_needed = len(review_items) > 0
         expected_review_needed = None
         if isinstance(review_expectation, dict):
             flag = review_expectation.get("review_needed")
