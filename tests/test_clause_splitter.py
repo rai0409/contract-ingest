@@ -261,6 +261,43 @@ def test_clause_splitter_separates_form_and_instruction_from_main_contract() -> 
     assert "instruction" in section_types
 
 
+def test_clause_splitter_ignores_footer_form_marker_for_boundary_transition() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条 受託者は業務を履行する。"),
+        _make_block(2, "(様式-業務委託契約書(競争あり,個人情報あり)2023_01_01)", BlockType.FOOTER),
+        _make_block(3, "第75号)の規定により選任された管財人。"),
+        _make_block(4, "第2条 発注者は対価を支払う。"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) == 2
+    assert result.clauses[0].clause_no == "第1条"
+    assert "第75号)の規定により選任された管財人。" in result.clauses[0].text
+    assert result.clauses[1].clause_no == "第2条"
+
+
+def test_clause_splitter_keeps_signature_continuation_without_main_transition() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条 発注者は受託者に業務を委託する。"),
+        _make_block(2, "上記契約の成立を証するため、次に記名押印する。", BlockType.SIGNATURE_AREA),
+        _make_block(3, "する。", BlockType.OTHER, searchable=False),
+        _make_block(4, "令和○○年○○月○○日"),
+        _make_block(5, "発注者 福岡市西区元岡744 国立大学法人九州大学"),
+        _make_block(6, "[氏 名] [印]", BlockType.SIGNATURE_AREA, searchable=False),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) == 2
+    assert result.clauses[0].clause_no == "第1条"
+    assert result.clauses[1].section_type.value == "signature"
+    assert "令和○○年○○月○○日" in result.clauses[1].text
+    assert "発注者 福岡市西区元岡744 国立大学法人九州大学" in result.clauses[1].text
+
+
 def test_split_embedded_headings_rejects_law_reference_split_point() -> None:
     segments = ClauseSplitter._split_embedded_headings("本契約は民法 第467条第1項に従って履行する。")
 

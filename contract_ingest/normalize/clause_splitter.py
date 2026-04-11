@@ -103,6 +103,8 @@ class ClauseSplitter:
                 if not text:
                     continue
                 text = self._collapse_duplicate_heading_like_fragment(text)
+                if self._is_boundary_noise_block(block=block, text=text):
+                    continue
                 next_text_hint: str | None = None
                 if seg_idx + 1 < len(segments):
                     next_text_hint = self._collapse_duplicate_heading_like_fragment(normalize_text(segments[seg_idx + 1]))
@@ -130,6 +132,13 @@ class ClauseSplitter:
                     next_text=next_text_hint,
                 ):
                     section_type = SectionType.MAIN_CONTRACT
+                if (
+                    current is not None
+                    and current.section_type == SectionType.SIGNATURE
+                    and section_type == SectionType.MAIN_CONTRACT
+                    and self._is_signature_continuation_line(text=text, block=block)
+                ):
+                    section_type = SectionType.SIGNATURE
                 if self._is_tail_restart_marker(text):
                     tail_restart_pending = True
                 if (
@@ -369,6 +378,42 @@ class ClauseSplitter:
         if len(normalized) <= max_chars:
             return normalized
         return f"{normalized[:max_chars].rstrip()}..."
+
+    @staticmethod
+    def _is_boundary_noise_block(block: EvidenceBlock, text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return True
+        if block.block_type not in {BlockType.HEADER, BlockType.FOOTER}:
+            return False
+        if is_page_number_text(normalized):
+            return True
+        if is_annotation_like_text(normalized):
+            return True
+        if re.match(r"^\(?\s*様式[-－]", normalized):
+            return True
+        return False
+
+    @staticmethod
+    def _is_signature_continuation_line(text: str, block: EvidenceBlock) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        if re.match(r"^\s*第[0-9０-９一二三四五六七八九十百千〇零]+\s*条", normalized):
+            return False
+        if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
+            return True
+        if len(normalized) <= 4 and normalized.endswith(("。", "．")):
+            return True
+        if re.fullmatch(r"(?:令和|平成|昭和)[0-9０-９○◯〇\s]*年[0-9０-９○◯〇\s]*月[0-9０-９○◯〇\s]*日", normalized):
+            return True
+        if normalized.startswith(("発注者", "受託者", "甲 ", "乙 ")):
+            return True
+        if re.search(r"\[(?:所\s*在\s*地|氏\s*名|印)\]", normalized):
+            return True
+        if re.search(r"(?:理事長|代表者|代表取締役|総長).*(?:印|\[印\])", normalized):
+            return True
+        return False
 
     @staticmethod
     def _split_embedded_headings(text: str) -> list[str]:
