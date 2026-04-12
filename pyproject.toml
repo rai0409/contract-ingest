@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "contract-ingest"
 version = "0.1.0"
 description = "Contract PDF ingestion core for native-text-first and OCR-fallback extraction"
-readme = "contract_ingest_mvp_plan_complete.md"
+readme = "README.md"
 requires-python = ">=3.11"
 authors = [
   { name = "contract-ingest" }
@@ -22,7 +22,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "ruff>=0.8.0",
-  "mypy>=1.13.0"
+  "mypy>=1.13.0",
+  "pytest>=8.0.0"
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -230,6 +230,25 @@ def _build_review_items_index(results_dir: Path) -> dict[str, list[dict[str, Any
     return index
 
 
+def _resolve_result_payload_path(results_dir: Path, doc_id: str, row_path: str | None = None) -> Path | None:
+    legacy_path = results_dir / f"{doc_id}.json"
+    if legacy_path.exists():
+        return legacy_path
+
+    directory_layout_path = results_dir / doc_id / "document.json"
+    if directory_layout_path.exists():
+        return directory_layout_path
+
+    # Older baseline runs may use the input PDF stem as the output directory name.
+    if isinstance(row_path, str) and row_path:
+        input_stem = Path(row_path).stem
+        if input_stem:
+            stem_layout_path = results_dir / input_stem / "document.json"
+            if stem_layout_path.exists():
+                return stem_layout_path
+    return None
+
+
 def _extract_clause_count(result: dict[str, Any]) -> int | None:
     clauses = result.get("clauses")
     if isinstance(clauses, list):
@@ -283,8 +302,12 @@ def _evaluate_against_results(rows: list[dict[str, Any]], results_dir: Path) -> 
     review_items_by_doc_id = _build_review_items_index(results_dir)
 
     for row in rows:
-        result_path = results_dir / f"{row['doc_id']}.json"
-        if not result_path.exists():
+        result_path = _resolve_result_payload_path(
+            results_dir,
+            str(row["doc_id"]),
+            str(row.get("path", "")),
+        )
+        if result_path is None:
             missing_result_files += 1
             continue
 
@@ -395,7 +418,10 @@ def main() -> int:
         "--results-dir",
         type=Path,
         default=None,
-        help="Optional directory containing extraction outputs as <doc_id>.json.",
+        help=(
+            "Optional directory containing extraction outputs as either "
+            "<doc_id>.json or <doc_id>/document.json."
+        ),
     )
     args = parser.parse_args()
 
