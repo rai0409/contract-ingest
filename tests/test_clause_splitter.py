@@ -298,6 +298,29 @@ def test_clause_splitter_keeps_signature_continuation_without_main_transition() 
     assert "発注者 福岡市西区元岡744 国立大学法人九州大学" in result.clauses[1].text
 
 
+def test_clause_splitter_ignores_tail_template_marker_and_placeholder_article_clause() -> None:
+    splitter = ClauseSplitter()
+    blocks = [
+        _make_block(1, "第1条 発注者は受託者に業務を委託する。"),
+        _make_block(2, "上記契約の成立を証するため、次に記名押印する。", BlockType.SIGNATURE_AREA),
+        _make_block(3, "(必要に応じて追加)"),
+        _make_block(4, "第○条 受託者は受託代金債権を譲渡することができる。"),
+        _make_block(5, "一 信用保証協会", BlockType.OTHER, searchable=False),
+        _make_block(6, "二 中小企業信用保険法施行令(昭和25年政令第350号)第1条の4に規定する金融"),
+        _make_block(7, "定目的会社", BlockType.OTHER, searchable=False),
+        _make_block(8, "四 信託業法(平成16年法律第154号)第2条第2項に規定する信託会社"),
+        _make_block(9, "2 受託者は譲受人との受託代金債権の譲渡に関する契約には条件を付さなければならない。"),
+    ]
+
+    result = splitter.split(blocks)
+
+    assert len(result.clauses) == 2
+    assert result.clauses[0].clause_no == "第1条"
+    assert result.clauses[1].section_type.value == "signature"
+    for forbidden in ["第○条", "信用保証協会", "譲受人", "受託代金債権"]:
+        assert all(forbidden not in clause.text for clause in result.clauses)
+
+
 def test_split_embedded_headings_rejects_law_reference_split_point() -> None:
     segments = ClauseSplitter._split_embedded_headings("本契約は民法 第467条第1項に従って履行する。")
 
