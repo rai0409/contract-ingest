@@ -46,6 +46,9 @@ _ARTICLE_REFERENCE_CHAIN_TAIL_RE = re.compile(
     r"^(?:[、,，]第[0-9０-９一二三四五六七八九十百千〇零]+条|(?:及び|又は|または|若しくは)第[0-9０-９一二三四五六七八九十百千〇零]+条)"
 )
 _NUMBERED_CONTINUATION_HEAD_RE = re.compile(r"^\s*(?:\(?[0-9０-９]{1,2}\)?|[一二三四五六七八九十]{1,2}|[①-⑩])(?:[\s　\.．、)]|$)")
+_TAIL_TEMPLATE_ITEM_SIGNAL_RE = re.compile(
+    r"(?:信用保証協会|中小企業信用保険法施行令|資産の流動化|信託業法|譲受人|受託代金債権|民法の特例等)"
+)
 
 
 @dataclass
@@ -93,6 +96,7 @@ class ClauseSplitter:
         section_boundary_uncertain_transitions: dict[str, int] = {}
         section_boundary_uncertain_samples: list[dict[str, str]] = []
         tail_restart_pending = False
+        tail_form_continuation_active = False
 
         for block_idx, block in enumerate(ordered):
             raw_text = str(block.text)
@@ -119,12 +123,25 @@ class ClauseSplitter:
                             break
 
                 heading = self._detect_heading(text)
+                if _TAIL_FORM_SIGNAL_RE.search(text) or re.match(r"^\s*第[○◯〇□■]+\s*条", text):
+                    tail_form_continuation_active = True
                 section_type = self._infer_section_type(
                     text=text,
                     heading=heading,
                     block=block,
                     seen_article_heading=seen_article_heading,
                 )
+                if (
+                    current is not None
+                    and current.section_type in {SectionType.FORM, SectionType.INSTRUCTION}
+                    and self._is_tail_form_continuation_text(
+                        text=text,
+                        block=block,
+                        heading=heading,
+                        continuation_active=tail_form_continuation_active,
+                    )
+                ):
+                    section_type = current.section_type
                 if section_type in {SectionType.FORM, SectionType.SIGNATURE} and self._should_rescue_numbered_continuation(
                     text=text,
                     block=block,
@@ -754,6 +771,8 @@ class ClauseSplitter:
             return SectionType.FORM
         if _TAIL_FORM_SIGNAL_RE.search(normalized):
             return SectionType.FORM
+        if re.match(r"^\s*第[○◯〇□■]+\s*条", normalized):
+            return SectionType.FORM
         if block.block_type in {BlockType.SIGNATURE_AREA, BlockType.STAMP_AREA}:
             return SectionType.SIGNATURE
         if _EXECUTION_SIGNATURE_SIGNAL_RE.search(normalized):
@@ -797,6 +816,7 @@ class ClauseSplitter:
         text: str,
         section_type: SectionType = SectionType.MAIN_CONTRACT,
     ) -> bool:
+        normalized = normalize_text(text)
         if not text:
             return True
         if block.block_type in {BlockType.HEADER, BlockType.FOOTER}:
@@ -806,12 +826,44 @@ class ClauseSplitter:
         if section_type in {SectionType.APPENDIX, SectionType.FORM, SectionType.INSTRUCTION, SectionType.SIGNATURE}:
             if block.block_type in {BlockType.IMAGE, BlockType.TABLE}:
                 return False
+            if section_type in {SectionType.FORM, SectionType.INSTRUCTION}:
+                if _TAIL_FORM_SIGNAL_RE.search(normalized):
+                    return True
+                if re.match(r"^\s*第[○◯〇□■]+\s*条", normalized):
+                    return True
+                if _TAIL_TEMPLATE_ITEM_SIGNAL_RE.search(normalized):
+                    return True
+                if not block.searchable and (is_fragment_like_text(normalized) or len(normalized) <= 12):
+                    return True
             return bool(is_annotation_like_text(text) and len(normalize_text(text)) <= 6)
         if is_annotation_like_text(text):
             return True
         if is_fragment_like_text(text) and not any(token in text for token in ["甲", "乙", "条", "項"]):
             return True
         if not block.searchable and is_fragment_like_text(text):
+            return True
+        return False
+
+    @staticmethod
+    def _is_tail_form_continuation_text(
+        text: str,
+        block: EvidenceBlock,
+        heading: tuple[str, str | None] | None,
+        *,
+        continuation_active: bool,
+    ) -> bool:
+        if not continuation_active:
+            return False
+        if heading is not None and heading[0].startswith("第") and parse_article_number(heading[0]) is not None:
+            return False
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+        if _TAIL_TEMPLATE_ITEM_SIGNAL_RE.search(normalized):
+            return True
+        if _NUMBERED_CONTINUATION_HEAD_RE.match(normalized):
+            return True
+        if not block.searchable and (is_fragment_like_text(normalized) or len(normalized) <= 12):
             return True
         return False
 
